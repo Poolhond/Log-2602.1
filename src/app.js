@@ -382,6 +382,9 @@ function loadState(){
     if (!("cashPaid" in s)) s.cashPaid = false;
     if (!("invoiceAmount" in s)) s.invoiceAmount = 0;
     if (!("cashAmount" in s)) s.cashAmount = 0;
+    if (!("invoiceNumber" in s)) s.invoiceNumber = null;
+    if (!("invoiceDate" in s)) s.invoiceDate = s.date || todayISO();
+    if (!("invoiceLocked" in s)) s.invoiceLocked = Boolean(s.isCalculated);
     syncSettlementAmounts(s);
     if (!("demo" in s)) s.demo = false;
   }
@@ -989,6 +992,53 @@ function getSettlementTotals(settlement){
     cashTotal: cashTotals.subtotal
   };
 }
+
+function parseInvoiceNumber(invoiceNumber){
+  const match = String(invoiceNumber || "").trim().toUpperCase().match(/^F(\d+)$/);
+  if (!match) return null;
+  return Number(match[1]);
+}
+
+function getNextInvoiceNumber(settlements = state.settlements || []){
+  const highest = (settlements || []).reduce((max, settlement)=>{
+    if (!isSettlementCalculated(settlement)) return max;
+    const parsed = parseInvoiceNumber(settlement?.invoiceNumber);
+    if (!Number.isFinite(parsed)) return max;
+    return Math.max(max, parsed);
+  }, 0);
+  return `F${highest + 1}`;
+}
+
+function validateInvoiceChronology(settlement, settlements = state.settlements || []){
+  if (!settlement) return { valid: false, reason: "missing_settlement" };
+
+  const invoiceDate = String(settlement.invoiceDate || "").trim();
+  const invoiceNumberValue = parseInvoiceNumber(settlement.invoiceNumber);
+  if (!invoiceDate || !invoiceNumberValue){
+    return { valid: false, reason: "missing_invoice_data" };
+  }
+
+  let latestLowerNumberDate = "";
+  for (const other of (settlements || [])){
+    if (!other || other.id === settlement.id || !isSettlementCalculated(other)) continue;
+    const otherNumberValue = parseInvoiceNumber(other.invoiceNumber);
+    if (!otherNumberValue || otherNumberValue >= invoiceNumberValue) continue;
+    const otherDate = String(other.invoiceDate || "").trim();
+    if (!otherDate) continue;
+    if (!latestLowerNumberDate || otherDate > latestLowerNumberDate) latestLowerNumberDate = otherDate;
+  }
+
+  if (latestLowerNumberDate && invoiceDate < latestLowerNumberDate){
+    return { valid: false, reason: "date_before_previous_invoice", minDate: latestLowerNumberDate };
+  }
+
+  return { valid: true };
+}
+
+function lockInvoice(settlement){
+  if (!settlement) return;
+  settlement.invoiceLocked = true;
+}
 function isSettlementCalculated(settlement){
   return Boolean(
     settlement?.isCalculated ||
@@ -1310,10 +1360,14 @@ const actions = {
     commit();
   },
   createSettlement(customerId = state.customers[0]?.id || ""){
+    const invoiceDate = todayISO();
     const s = {
-      id: uid(), customerId, date: todayISO(), createdAt: now(), logIds: [], lines: [],
+      id: uid(), customerId, date: invoiceDate, createdAt: now(), logIds: [], lines: [],
       status: "draft", markedCalculated: false, isCalculated: false, calculatedAt: null,
-      invoiceAmount: 0, cashAmount: 0, invoicePaid: false, cashPaid: false
+      invoiceAmount: 0, cashAmount: 0, invoicePaid: false, cashPaid: false,
+      invoiceNumber: getNextInvoiceNumber(state.settlements || []),
+      invoiceDate,
+      invoiceLocked: false
     };
     state.settlements.unshift(s);
     commit();
@@ -1325,10 +1379,14 @@ const actions = {
     if (settlementId === "new"){
       const log = state.logs.find(l => l.id === logId);
       if (!log) return;
+      const invoiceDate = log.date || todayISO();
       const s = {
-        id: uid(), customerId: log.customerId, date: log.date, createdAt: now(), logIds: [logId], lines: [],
+        id: uid(), customerId: log.customerId, date: invoiceDate, createdAt: now(), logIds: [logId], lines: [],
         status: "draft", markedCalculated: false, isCalculated: false, calculatedAt: null,
-        invoiceAmount: 0, cashAmount: 0, invoicePaid: false, cashPaid: false
+        invoiceAmount: 0, cashAmount: 0, invoicePaid: false, cashPaid: false,
+        invoiceNumber: getNextInvoiceNumber(state.settlements || []),
+        invoiceDate,
+        invoiceLocked: false
       };
       s.lines = computeSettlementFromLogs(s.customerId, s.logIds).lines;
       state.settlements.unshift(s);
@@ -1351,9 +1409,18 @@ const actions = {
   },
   calculateSettlement(settlementId){
     const settlement = state.settlements.find(x => x.id === settlementId);
-    if (!settlement) return;
+    if (!settlement) return { ok: false, reason: "not_found" };
+
+    if (!settlement.invoiceNumber) settlement.invoiceNumber = getNextInvoiceNumber(state.settlements || []);
+    settlement.invoiceNumber = String(settlement.invoiceNumber || "").trim().toUpperCase();
+    if (!settlement.invoiceDate) settlement.invoiceDate = settlement.date || todayISO();
+
+    const validation = validateInvoiceChronology(settlement, state.settlements || []);
+    if (!validation.valid) return { ok: false, reason: validation.reason, minDate: validation.minDate };
+
     calculateSettlement(settlement);
     commit();
+    return { ok: true };
   },
   setInvoicePaid(settlementId, paid){
     const s = state.settlements.find(x => x.id === settlementId);
@@ -3356,6 +3423,7 @@ function calculateSettlement(settlement){
   settlement.markedCalculated = true;
   settlement.isCalculated = true;
   settlement.calculatedAt = now();
+  lockInvoice(settlement);
   syncSettlementStatus(settlement);
   syncSettlementAmounts(settlement);
 }
@@ -3366,6 +3434,8 @@ function uncalculateSettlement(settlement){
   settlement.markedCalculated = false;
   settlement.calculatedAt = null;
   settlement.status = "draft";
+  settlement.invoicePaid = false;
+  settlement.cashPaid = false;
   syncSettlementStatus(settlement);
 }
 
@@ -3426,10 +3496,15 @@ function renderSettlementSheet(id){
   if (!("markedCalculated" in s)) s.markedCalculated = s.status === "calculated";
   if (!("isCalculated" in s)) s.isCalculated = isSettlementCalculated(s);
   if (!("calculatedAt" in s)) s.calculatedAt = s.isCalculated ? (s.createdAt || now()) : null;
+  if (!("invoiceNumber" in s)) s.invoiceNumber = getNextInvoiceNumber(state.settlements || []);
+  if (!("invoiceDate" in s)) s.invoiceDate = s.date || todayISO();
+  if (!("invoiceLocked" in s)) s.invoiceLocked = Boolean(s.isCalculated);
   ensureDefaultSettlementLines(s);
   syncSettlementStatus(s);
 
   const isEdit = isSettlementEditing(s.id);
+  const invoiceLocked = Boolean(s.invoiceLocked || isSettlementCalculated(s));
+  const invoiceNumberDisplay = String(s.invoiceNumber || "").trim().toUpperCase();
   const customerOptions = state.customers.map(c => `<option value="${c.id}" ${c.id===s.customerId?"selected":""}>${esc(c.nickname||c.name||"Klant")}</option>`).join('');
   const availableLogs = state.logs
     .filter(l => l.customerId === s.customerId)
@@ -3479,7 +3554,10 @@ function renderSettlementSheet(id){
 
       ${showInvoiceSection ? `
       <div class="section stack">
-        <div class="section-title-row"><h2>Factuur</h2><div class="section-value">${formatMoneyEUR(pay.invoiceTotal)}</div></div>
+        <div class="section-title-row">${(isEdit && !invoiceLocked)
+          ? `<input id="invoiceNumberInput" value="${esc(invoiceNumberDisplay)}" />`
+          : `<h2>${esc(invoiceNumberDisplay || "")}</h2>`}<div class="section-value">${formatMoneyEUR(pay.invoiceTotal)}</div></div>
+        ${isEdit ? `<input id="invoiceDateInput" type="date" value="${esc(s.invoiceDate||todayISO())}" ${invoiceLocked ? "disabled" : ""} />` : ""}
         ${renderLinesTable(s, 'invoice', { readOnly: !isEdit })}
         ${isEdit ? `<button class="btn" id="addInvoiceLine">+ regel</button>` : ""}
       </div>
@@ -3502,7 +3580,7 @@ function renderSettlementSheet(id){
       <div class="section stack">
         <h2>Acties</h2>
         <div class="compact-row"><label>Klant</label><div><select id="sCustomer">${customerOptions}</select></div></div>
-        <div class="compact-row"><label>Datum</label><div><input id="sDate" type="date" value="${esc(s.date||todayISO())}" /></div></div>
+        <div class="compact-row"><label>Datum</label><div><input id="sDate" type="date" value="${esc(s.date||todayISO())}" ${invoiceLocked ? "disabled" : ""} /></div></div>
         <button class="btn danger" id="delSettlement">Verwijder</button>
       </div>` : ""}
     </div>
@@ -3527,13 +3605,19 @@ function renderSettlementSheet(id){
           uncalculateSettlement(draft);
         });
       } else {
-        actions.calculateSettlement(s.id);
+        const result = actions.calculateSettlement(s.id);
+        if (!result?.ok){
+          alert('Factuurdatum ongeldig.');
+        }
       }
       renderSheet();
       return;
     }
     if (!calculated){
-      actions.calculateSettlement(s.id);
+      const result = actions.calculateSettlement(s.id);
+      if (!result?.ok){
+        alert('Factuurdatum ongeldig.');
+      }
     }
     renderSheet();
   });
@@ -3574,8 +3658,10 @@ function renderSettlementSheet(id){
       renderSheet();
     });
     $('#sDate')?.addEventListener('change', ()=>{
+      if (invoiceLocked) return;
       actions.editSettlement(s.id, (draft)=>{
         draft.date = ($('#sDate').value||'').trim() || todayISO();
+        draft.invoiceDate = draft.date;
       });
       renderSheet();
     });
@@ -3583,6 +3669,23 @@ function renderSettlementSheet(id){
       actions.editSettlement(s.id, (draft)=>{
         draft.note = ($('#sNote').value || '').trim();
       });
+    });
+
+    $('#invoiceNumberInput')?.addEventListener('change', ()=>{
+      if (invoiceLocked) return;
+      actions.editSettlement(s.id, (draft)=>{
+        const raw = String($('#invoiceNumberInput').value || '').trim().toUpperCase();
+        draft.invoiceNumber = raw;
+      });
+      renderSheet();
+    });
+    $('#invoiceDateInput')?.addEventListener('change', ()=>{
+      if (invoiceLocked) return;
+      actions.editSettlement(s.id, (draft)=>{
+        draft.invoiceDate = ($('#invoiceDateInput').value || '').trim() || todayISO();
+        draft.date = draft.invoiceDate;
+      });
+      renderSheet();
     });
 
     $('#sheetBody').querySelectorAll('[data-logpick]').forEach(cb=>{
@@ -3603,7 +3706,10 @@ function renderSettlementSheet(id){
     });
 
     $('#btnRecalc')?.addEventListener('click', ()=>{
-      actions.calculateSettlement(s.id);
+      const result = actions.calculateSettlement(s.id);
+      if (!result?.ok){
+        alert('Factuurdatum ongeldig.');
+      }
       renderSheet();
     });
 
