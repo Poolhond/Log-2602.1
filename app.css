@@ -985,6 +985,95 @@ body:not([data-view="meer"]) #moreActionBar{
 .settlement-detail .compact-row{
   grid-template-columns:84px minmax(0,1fr);
 }
+.settlement-flow .section-tight{
+  gap:10px;
+}
+
+.allocation-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:12px;
+}
+
+.allocation-col{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:8px;
+}
+
+.allocation-col-head{
+  font-size:12px;
+  color:var(--muted);
+}
+
+.allocation-controls{
+  width:100%;
+  display:grid;
+  grid-template-columns:34px minmax(0,1fr) 34px;
+  align-items:center;
+  gap:8px;
+}
+
+.allocation-btn-placeholder{
+  width:34px;
+  height:34px;
+}
+
+.allocation-value{
+  text-align:center;
+  font-size:16px;
+}
+
+.allocation-icon .icon{
+  width:16px;
+  height:16px;
+  color:var(--muted);
+}
+
+.allocation-extra-list{
+  gap:10px;
+}
+
+.allocation-extra-item{
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
+
+.allocation-extra-title{
+  font-size:13px;
+}
+
+.allocation-grid-extra .allocation-controls{
+  display:none;
+}
+
+.totals-flat-grid{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:12px;
+}
+
+.totals-flat-col{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  align-items:center;
+}
+
+.totals-flat-value{
+  font-size:16px;
+}
+
+.totals-flat-grid.is-open .totals-flat-value{
+  color:#ff8c00;
+}
+
+.totals-flat-grid.is-paid .totals-flat-value{
+  color:#00a05a;
+}
+
 
 .settlement-detail.card-accent--open,
 .settlement-detail.card-accent--calculated,
