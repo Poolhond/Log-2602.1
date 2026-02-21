@@ -2610,19 +2610,22 @@ function renderSheet(){
 }
 
 function renderSheetKeepScroll(){
-  const before = document.getElementById("sheetBody");
-  const top = before ? before.scrollTop : 0;
-  const left = before ? before.scrollLeft : 0;
+  const scroller =
+    document.querySelector("#detailPage.active .page-inner")
+    || document.querySelector("#detailPage .page-inner")
+    || document.querySelector(".page.active .page-inner");
+  const top = scroller ? scroller.scrollTop : 0;
+
   renderSheet();
+
   requestAnimationFrame(() => {
-    const after = document.getElementById("sheetBody");
-    if (!after) return;
-    after.scrollTop = top;
-    after.scrollLeft = left;
-    requestAnimationFrame(() => {
-      after.scrollTop = top;
-      after.scrollLeft = left;
-    });
+    const scroller2 =
+      document.querySelector("#detailPage.active .page-inner")
+      || document.querySelector("#detailPage .page-inner")
+      || document.querySelector(".page.active .page-inner");
+    if (!scroller2) return;
+    scroller2.scrollTop = top;
+    requestAnimationFrame(() => { scroller2.scrollTop = top; });
   });
 }
 
