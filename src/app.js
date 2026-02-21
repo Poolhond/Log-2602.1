@@ -3308,17 +3308,26 @@ function syncSettlementAmounts(settlement){
 function renderSettlementStatusIcons(settlement){
   const isCalculated = isSettlementCalculated(settlement);
   const isEdit = isSettlementEditing(settlement?.id);
+  const showCalculateIcon = settlement?.status !== "calculated" || isEdit === true;
   const calcStateClass = isCalculated ? "is-open" : "";
   const calcStateStyle = isCalculated
     ? ""
     : ' style="color:#ffcc00;border-color:rgba(255,204,0,.55);background:rgba(255,204,0,.10);"';
   const calcDisabled = !isEdit && isCalculated ? " disabled aria-disabled=\"true\"" : "";
   const iconPresentation = getSettlementIconPresentation(settlement);
-  const chips = [`
+  const chips = [
+    showCalculateIcon
+      ? `
     <button class="status-icon-chip status-icon-calc ${calcStateClass}" id="toggleCalculated" type="button" aria-label="Bereken afrekening"${calcStateStyle}${calcDisabled}>
       <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="4" y="3" width="16" height="18" rx="2"></rect><path d="M8 7h8M8 12h3M13 12h3M8 16h8" stroke-linecap="round"></path></svg>
     </button>
-  `];
+  `
+      : `
+    <button class="status-icon-chip status-icon-calc ${calcStateClass}" id="toggleCalculated" type="button" aria-hidden="true" tabindex="-1" disabled style="visibility:hidden;pointer-events:none;">
+      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="4" y="3" width="16" height="18" rx="2"></rect><path d="M8 7h8M8 12h3M13 12h3M8 16h8" stroke-linecap="round"></path></svg>
+    </button>
+  `
+  ];
   const invoiceIcon = iconPresentation.find(icon => icon.type === "invoice");
   if (invoiceIcon?.show){
     chips.push(`
