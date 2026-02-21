@@ -822,11 +822,11 @@ function seedDemoPeriod(st, { months = 24, force = false, seed = "demo-v2" } = {
 
   let nextInvoice = (st.settlements || []).reduce((max, settlement)=>{
     if (!isSettlementCalculated(settlement)) return max;
-    const parsed = parseInvoiceNumber(settlement.invoiceNumber);
-    return Number.isFinite(parsed) ? Math.max(max, parsed) : max;
+    const digits = String(settlement.invoiceNumber || "").match(/(\d+)/g) || [];
+    const value = Number(digits.join(""));
+    return Number.isFinite(value) ? Math.max(max, value) : max;
   }, 0);
 
-  const chronologyBase = (st.settlements || []).filter(s => isSettlementCalculated(s));
   for (const settlement of demoCalculated){
     settlement.status = "calculated";
     settlement.isCalculated = true;
@@ -834,21 +834,6 @@ function seedDemoPeriod(st, { months = 24, force = false, seed = "demo-v2" } = {
     settlement.invoiceLocked = true;
     settlement.invoiceNumber = settlementHasInvoiceComponent(settlement) ? `F${++nextInvoice}` : null;
     settlement.calculatedAt = settlement.createdAt;
-
-    let validationSet = [...chronologyBase, ...demoCalculated];
-    let validation = validateInvoiceChronology(settlement, validationSet);
-    let guard = 0;
-    while (!validation.valid && guard < 30){
-      const minDate = validation.minDate || settlement.invoiceDate;
-      const shifted = addDays(new Date(`${minDate}T00:00:00`), validation.reason === "date_before_previous_invoice" ? 1 : 0);
-      settlement.invoiceDate = formatISO(shifted);
-      settlement.date = settlement.invoiceDate;
-      settlement.createdAt = dateWithBusinessTime(settlement.invoiceDate);
-      settlement.calculatedAt = settlement.createdAt;
-      validationSet = [...chronologyBase, ...demoCalculated];
-      validation = validateInvoiceChronology(settlement, validationSet);
-      guard += 1;
-    }
   }
 
   for (const settlement of settlements){
@@ -1138,18 +1123,13 @@ function settlementHasInvoiceComponent(settlement, totals = getSettlementTotals(
   );
 }
 
-function parseInvoiceNumber(invoiceNumber){
-  const match = String(invoiceNumber || "").trim().toUpperCase().match(/^F(\d+)$/);
-  if (!match) return null;
-  return Number(match[1]);
-}
-
 function getNextInvoiceNumber(settlements = state.settlements || []){
   const highest = (settlements || []).reduce((max, settlement)=>{
     if (!isSettlementCalculated(settlement)) return max;
-    const parsed = parseInvoiceNumber(settlement?.invoiceNumber);
-    if (!Number.isFinite(parsed)) return max;
-    return Math.max(max, parsed);
+    const digits = String(settlement?.invoiceNumber || "").match(/(\d+)/g) || [];
+    const value = Number(digits.join(""));
+    if (!Number.isFinite(value)) return max;
+    return Math.max(max, value);
   }, 0);
   return `F${highest + 1}`;
 }
@@ -1176,6 +1156,7 @@ function syncSettlementDatesFromLogs(settlement, sourceState = state){
   if (!settlement.invoiceDate){
     settlement.invoiceDate = settlement.date || fallbackDate;
   }
+  settlement.invoiceDate = settlement.date || fallbackDate;
 }
 
 function ensureSettlementInvoiceDefaults(settlement, settlements = state.settlements || []){
@@ -1186,32 +1167,6 @@ function ensureSettlementInvoiceDefaults(settlement, settlements = state.settlem
   if (!settlement.invoiceDate){
     settlement.invoiceDate = settlement.date || todayISO();
   }
-}
-
-function validateInvoiceChronology(settlement, settlements = state.settlements || []){
-  if (!settlement) return { valid: false, reason: "missing_settlement" };
-
-  const invoiceDate = String(settlement.invoiceDate || "").trim();
-  const invoiceNumberValue = parseInvoiceNumber(settlement.invoiceNumber);
-  if (!invoiceDate || !invoiceNumberValue){
-    return { valid: false, reason: "missing_invoice_data" };
-  }
-
-  let latestLowerNumberDate = "";
-  for (const other of (settlements || [])){
-    if (!other || other.id === settlement.id || !isSettlementCalculated(other)) continue;
-    const otherNumberValue = parseInvoiceNumber(other.invoiceNumber);
-    if (!otherNumberValue || otherNumberValue >= invoiceNumberValue) continue;
-    const otherDate = String(other.invoiceDate || "").trim();
-    if (!otherDate) continue;
-    if (!latestLowerNumberDate || otherDate > latestLowerNumberDate) latestLowerNumberDate = otherDate;
-  }
-
-  if (latestLowerNumberDate && invoiceDate < latestLowerNumberDate){
-    return { valid: false, reason: "date_before_previous_invoice", minDate: latestLowerNumberDate };
-  }
-
-  return { valid: true };
 }
 
 function lockInvoice(settlement){
@@ -1604,12 +1559,7 @@ const actions = {
     syncSettlementDatesFromLogs(settlement);
     ensureSettlementInvoiceDefaults(settlement, state.settlements || []);
     if (settlementHasInvoiceComponent(settlement)){
-      settlement.invoiceNumber = String(settlement.invoiceNumber || "").trim().toUpperCase();
-    }
-
-    if (settlementHasInvoiceComponent(settlement)){
-      const validation = validateInvoiceChronology(settlement, state.settlements || []);
-      if (!validation.valid) return { ok: false, reason: validation.reason, minDate: validation.minDate };
+      settlement.invoiceNumber = String(settlement.invoiceNumber || "").trim();
     }
 
     calculateSettlement(settlement);
@@ -3639,7 +3589,7 @@ function renderSettlementSheet(id){
 
   const isEdit = isSettlementEditing(s.id);
   const invoiceLocked = Boolean(s.invoiceLocked || isSettlementCalculated(s));
-  const invoiceNumberDisplay = String(s.invoiceNumber || "").trim().toUpperCase();
+  const invoiceNumberDisplay = String(s.invoiceNumber || "").trim();
   const customerOptions = state.customers.map(c => `<option value="${c.id}" ${c.id===s.customerId?"selected":""}>${esc(c.nickname||c.name||"Klant")}</option>`).join('');
   const availableLogs = state.logs
     .filter(l => l.customerId === s.customerId)
@@ -3692,7 +3642,6 @@ function renderSettlementSheet(id){
         <div class="section-title-row">${(isEdit && !invoiceLocked)
           ? `<input id="invoiceNumberInput" value="${esc(invoiceNumberDisplay)}" />`
           : `<h2>${esc(invoiceNumberDisplay || "")}</h2>`}<div class="section-value">${moneyOrBlank(pay.invoiceTotal)}</div></div>
-        ${isEdit ? `<input id="invoiceDateInput" type="date" value="${esc(s.invoiceDate||todayISO())}" ${invoiceLocked ? "disabled" : ""} />` : ""}
         ${renderLinesTable(s, 'invoice', { readOnly: !isEdit })}
         ${isEdit ? `<button class="btn" id="addInvoiceLine">+ regel</button>` : ""}
       </div>
@@ -3740,19 +3689,13 @@ function renderSettlementSheet(id){
           uncalculateSettlement(draft);
         });
       } else {
-        const result = actions.calculateSettlement(s.id);
-        if (!result?.ok){
-          alert('Factuurdatum ongeldig.');
-        }
+        actions.calculateSettlement(s.id);
       }
       renderSheet();
       return;
     }
     if (!calculated){
-      const result = actions.calculateSettlement(s.id);
-      if (!result?.ok){
-        alert('Factuurdatum ongeldig.');
-      }
+      actions.calculateSettlement(s.id);
     }
     renderSheet();
   });
@@ -3796,7 +3739,6 @@ function renderSettlementSheet(id){
       if (invoiceLocked) return;
       actions.editSettlement(s.id, (draft)=>{
         draft.date = ($('#sDate').value||'').trim() || todayISO();
-        draft.invoiceDate = draft.date;
       });
       renderSheet();
     });
@@ -3809,20 +3751,11 @@ function renderSettlementSheet(id){
     $('#invoiceNumberInput')?.addEventListener('change', ()=>{
       if (invoiceLocked) return;
       actions.editSettlement(s.id, (draft)=>{
-        const raw = String($('#invoiceNumberInput').value || '').trim().toUpperCase();
+        const raw = String($('#invoiceNumberInput').value || '').trim();
         draft.invoiceNumber = raw;
       });
       renderSheet();
     });
-    $('#invoiceDateInput')?.addEventListener('change', ()=>{
-      if (invoiceLocked) return;
-      actions.editSettlement(s.id, (draft)=>{
-        draft.invoiceDate = ($('#invoiceDateInput').value || '').trim() || todayISO();
-        draft.date = draft.invoiceDate;
-      });
-      renderSheet();
-    });
-
     $('#sheetBody').querySelectorAll('[data-logpick]').forEach(cb=>{
       cb.addEventListener('change', ()=>{
         const logId = cb.getAttribute('data-logpick');
@@ -3841,10 +3774,7 @@ function renderSettlementSheet(id){
     });
 
     $('#btnRecalc')?.addEventListener('click', ()=>{
-      const result = actions.calculateSettlement(s.id);
-      if (!result?.ok){
-        alert('Factuurdatum ongeldig.');
-      }
+      actions.calculateSettlement(s.id);
       renderSheet();
     });
 
