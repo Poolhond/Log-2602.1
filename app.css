@@ -917,6 +917,15 @@ body:not([data-view="meer"]) #moreActionBar{
   align-items:baseline;
   justify-content:space-between;
   gap:12px;
+  min-width:0;
+  overflow:hidden;
+}
+
+#invoiceNumberInput{
+  width:100%;
+  min-width:0;
+  box-sizing:border-box;
+  flex:1 1 auto;
 }
 
 .section h2{
