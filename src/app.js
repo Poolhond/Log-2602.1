@@ -471,15 +471,40 @@ function settlementTotals(settlement){
   return getSettlementTotals(settlement);
 }
 
-function seedDemoMonths(st, { months = 3, force = false } = {}){
+// ---------- Demo seeding (deterministic, period-based, realistic chronology) ----------
+function createSeededRandom(seed = "demo-v2"){
+  let h = 1779033703 ^ String(seed).length;
+  for (let i = 0; i < String(seed).length; i++){
+    h = Math.imul(h ^ String(seed).charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  return function(){
+    h = Math.imul(h ^ (h >>> 16), 2246822507);
+    h = Math.imul(h ^ (h >>> 13), 3266489909);
+    const t = (h ^= h >>> 16) >>> 0;
+    return t / 4294967296;
+  };
+}
+
+function seedDemoPeriod(st, { months = 24, force = false, seed = "demo-v2" } = {}){
   const hasDemo = (st.customers||[]).some(c => c.demo) || (st.logs||[]).some(l => l.demo) || (st.settlements||[]).some(s => s.demo);
   if (!force && hasDemo) return false;
 
   ensureCoreProducts(st);
-
   const workProduct = st.products.find(p => (p.name||"").trim().toLowerCase() === "werk");
   const greenProduct = st.products.find(p => (p.name||"").trim().toLowerCase() === "groen");
   if (!workProduct || !greenProduct) return false;
+
+  const rnd = createSeededRandom(`${seed}|${months}`);
+  const sri = (min, max)=> Math.floor(rnd() * (max - min + 1)) + min;
+  const srf = (min, max)=> rnd() * (max - min) + min;
+  const spick = (arr)=> arr[sri(0, arr.length - 1)];
+  const chance = (p)=> rnd() < p;
+
+  const formatISO = (d)=> `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  const startOfDay = (d)=> { const x = new Date(d); x.setHours(0,0,0,0); return x; };
+  const addDays = (d, n)=> { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+  const monthDiff = (a, b)=> (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth());
 
   const DEMO_NOTES = [
     "Haag gesnoeid voor- en achterkant",
@@ -498,332 +523,356 @@ function seedDemoMonths(st, { months = 3, force = false } = {}){
     "Taxus in vorm gesnoeid"
   ];
 
-  // 15 customers: 10 frequent, 5 rare
-  // settlementRhythm: 3 direct, 7 monthly, 5 quarterly (shuffled across customers)
   const rhythmList = ["direct","direct","direct","monthly","monthly","monthly","monthly","monthly","monthly","monthly","quarterly","quarterly","quarterly","quarterly","quarterly"];
+  const shuffledRhythms = rhythmList.slice();
+  for (let i = shuffledRhythms.length - 1; i > 0; i--){
+    const j = sri(0, i);
+    [shuffledRhythms[i], shuffledRhythms[j]] = [shuffledRhythms[j], shuffledRhythms[i]];
+  }
+
   const usedNames = new Set();
-  const availableNicknames = DEMO.nicknames.slice().sort(() => Math.random() - 0.5);
+  const nicknames = DEMO.nicknames.slice();
+  for (let i = nicknames.length - 1; i > 0; i--){
+    const j = sri(0, i);
+    [nicknames[i], nicknames[j]] = [nicknames[j], nicknames[i]];
+  }
+
+  const nowDate = startOfDay(new Date());
+  const endDate = new Date(nowDate);
+  const startDate = startOfDay(new Date(nowDate));
+  startDate.setMonth(startDate.getMonth() - months);
+  const mondayOffset = (startDate.getDay() + 6) % 7;
+  startDate.setDate(startDate.getDate() - mondayOffset);
+
   const customers = [];
   for (let i = 0; i < 15; i++){
-    let fn, ln, nameKey;
+    let fn, ln, key;
     do {
-      fn = pick(DEMO.firstNames);
-      ln = pick(DEMO.lastNames);
-      nameKey = `${fn}|${ln}`;
-    } while (usedNames.has(nameKey));
-    usedNames.add(nameKey);
-    const street = pick(DEMO.streets);
-    const zone = pick(DEMO.zones);
-    const nr = ri(1, 180);
-    const nick = availableNicknames[i] || `${fn} ${ln}`;
-    const frequent = i < 10;
-    const settlementRhythm = rhythmList[i];
+      fn = spick(DEMO.firstNames);
+      ln = spick(DEMO.lastNames);
+      key = `${fn}|${ln}`;
+    } while (usedNames.has(key));
+    usedNames.add(key);
+
+    const createdAtDate = addDays(startDate, sri(0, Math.max(1, Math.floor((endDate - startDate) / 86400000))));
     customers.push({
       id: uid(),
-      nickname: nick,
+      nickname: nicknames[i] || `${fn} ${ln}`,
       name: `${fn} ${ln}`,
-      address: `${street} ${nr}, ${zone}, Leuven`,
-      createdAt: now() - ri(30, months * 30) * 86400000,
+      address: `${spick(DEMO.streets)} ${sri(1, 180)}, ${spick(DEMO.zones)}, Leuven`,
+      createdAt: createdAtDate.getTime(),
       demo: true,
-      frequent,
-      settlementRhythm
+      frequent: i < 10,
+      settlementRhythm: shuffledRhythms[i]
     });
   }
 
   const frequentCustomers = customers.filter(c => c.frequent);
   const rareCustomers = customers.filter(c => !c.frequent);
-
-  // Track rare customer visits per quarter: key = `${customerId}-${year}-Q${q}`
-  const rareVisitCount = new Map();
-
-  // Anchor to this week's Monday so weeks align to calendar
-  const nowMs = Date.now();
-  const nowDateObj = new Date(nowMs);
-  nowDateObj.setHours(0, 0, 0, 0);
-  const thisMondayMs = nowDateObj.getTime() - ((nowDateObj.getDay() + 6) % 7) * 86400000;
-  const totalWeeks = Math.ceil(months * 30.44 / 7);
+  const otherProducts = (st.products || []).filter(p => p.id !== workProduct.id && p.id !== greenProduct.id);
 
   const logs = [];
-  const usedSlots = new Set(); // `${customerId}-${dateISO}` prevents duplicate logs
+  const usedCustomerDate = new Set();
 
-  function getSeasonMult(month){
-    if (month >= 2 && month <= 4) return 1.2;  // lente: mrt-mei
-    if (month >= 5 && month <= 7) return 1.0;  // zomer: jun-aug
-    if (month >= 8 && month <= 10) return 0.9; // herfst: sep-nov
-    return 0.7;                                 // winter: dec-feb
+  function seasonDayBias(month){
+    if ([11,0,1].includes(month)) return 0.48;
+    if ([2,3,4].includes(month)) return 0.74;
+    if ([5,6,7].includes(month)) return 0.82;
+    return 0.68;
   }
 
-  function makeLog(customer, dateISO, shiftType){
-    const slotKey = `${customer.id}-${dateISO}`;
-    if (usedSlots.has(slotKey)) return null;
-    usedSlots.add(slotKey);
+  function createLog(customer, dayDate, slotIndex){
+    const dateISO = formatISO(dayDate);
+    const key = `${customer.id}-${dateISO}`;
+    if (usedCustomerDate.has(key)) return null;
+    usedCustomerDate.add(key);
 
-    const month = new Date(dateISO).getMonth();
-    const isWinter = month <= 1 || month === 11;
+    const isEvening = chance(slotIndex === 0 ? 0.04 : 0.09);
+    const startHour = isEvening ? sri(17, 19) : (chance(0.78) ? sri(7, 9) : sri(8, 10));
+    const startMinuteChoices = isEvening ? [0, 15, 30] : [0, 15, 30, 45];
+    const startMinute = spick(startMinuteChoices);
+    const startMs = new Date(`${dateISO}T${pad2(startHour)}:${pad2(startMinute)}:00`).getTime();
 
-    let startHour, startMin, firstDurMin, breakMin, secondDurMin;
-    if (shiftType === "evening"){
-      startHour = ri(17, 19);
-      startMin = pick([0, 15, 30]);
-      firstDurMin = ri(60, 120);
-      breakMin = 0;
-      secondDurMin = 0;
-    } else if (shiftType === "fullday"){
-      startHour = ri(7, 8);
-      startMin = pick([0, 30]);
-      firstDurMin = ri(180, 240);
-      breakMin = ri(20, 40);
-      secondDurMin = ri(150, 240);
-    } else {
-      startHour = ri(7, 9);
-      startMin = pick([0, 15, 30, 45]);
-      firstDurMin = isWinter ? ri(90, 150) : ri(90, 220);
-      breakMin = Math.random() < 0.35 ? ri(10, 35) : 0;
-      secondDurMin = isWinter ? 0 : (Math.random() < 0.55 ? ri(60, 180) : 0);
-    }
+    const firstWorkMin = isEvening ? sri(60, 130) : sri(85, 230);
+    const withBreak = !isEvening && chance(0.46);
+    const breakMin = withBreak ? sri(15, 45) : 0;
+    const secondWorkMin = isEvening ? 0 : (chance(0.62) ? sri(55, 190) : 0);
 
-    const start = new Date(`${dateISO}T${pad2(startHour)}:${pad2(startMin)}:00`).getTime();
-    const firstEnd = start + firstDurMin * 60000;
+    const firstEnd = startMs + firstWorkMin * 60000;
     const breakEnd = firstEnd + breakMin * 60000;
-    const finalEnd = breakEnd + secondDurMin * 60000;
+    const finalEnd = breakEnd + secondWorkMin * 60000;
 
-    const segments = [{ id: uid(), type:"work", start, end: firstEnd }];
-    if (breakMin > 0) segments.push({ id: uid(), type:"break", start: firstEnd, end: breakEnd });
-    if (secondDurMin > 0) segments.push({ id: uid(), type:"work", start: breakEnd, end: finalEnd });
+    const segments = [{ id: uid(), type: "work", start: startMs, end: firstEnd }];
+    if (breakMin > 0) segments.push({ id: uid(), type: "break", start: firstEnd, end: breakEnd });
+    if (secondWorkMin > 0) segments.push({ id: uid(), type: "work", start: breakEnd, end: finalEnd });
 
     const workHours = round2(sumWorkMs({ segments }) / 3600000);
-    const greenQty = ri(0, 3);
+    const greenQty = round2(sri(0, 6) / 2);
     const items = [
-      { id: uid(), productId: workProduct.id, qty: workHours, unitPrice: 38, note:"" },
-      { id: uid(), productId: greenProduct.id, qty: greenQty, unitPrice: 38, note:"" }
+      { id: uid(), productId: workProduct.id, qty: workHours, unitPrice: 38, note: "" },
+      { id: uid(), productId: greenProduct.id, qty: greenQty, unitPrice: 38, note: "" }
     ];
+
+    if (otherProducts.length && chance(0.06)){
+      const extra = spick(otherProducts);
+      items.push({
+        id: uid(),
+        productId: extra.id,
+        qty: round2(Math.max(1, srf(1, 3))),
+        unitPrice: Number(extra.price || extra.unitPrice || 25) || 25,
+        note: chance(0.4) ? "Aanvullend materiaal" : ""
+      });
+    }
 
     return {
       id: uid(),
       customerId: customer.id,
       date: dateISO,
-      createdAt: start,
+      createdAt: startMs,
       closedAt: finalEnd,
-      note: Math.random() < 0.5 ? pick(DEMO_NOTES) : "",
+      note: chance(0.32) ? spick(DEMO_NOTES) : "",
       segments,
       items,
       demo: true
     };
   }
 
-  // Build logs week by week (w=0 is oldest, w=totalWeeks-1 is current week)
-  for (let w = 0; w < totalWeeks; w++){
-    const weekMondayMs = thisMondayMs - (totalWeeks - 1 - w) * 7 * 86400000;
-    const weekDate = new Date(weekMondayMs);
-    const month = weekDate.getMonth();
-    const year = weekDate.getFullYear();
+  for (let cursor = new Date(startDate); cursor <= endDate; cursor = addDays(cursor, 1)){
+    if (cursor > endDate) break;
+    const dow = cursor.getDay();
+    const month = cursor.getMonth();
+    if (dow === 0) continue;
+    if (dow === 6 && !chance(0.06)) continue;
 
-    if (Math.random() > 0.85 * getSeasonMult(month)) continue; // vrije week
+    const span = Math.max(1, monthDiff(startDate, endDate));
+    const progress = monthDiff(startDate, cursor) / span;
+    const dayChance = Math.min(0.9, seasonDayBias(month) + (progress * 0.08));
+    if (!chance(dayChance)) continue;
 
-    // Kies 2-4 werkdagen (maandag=0 t/m vrijdag=4)
-    const numWorkDays = ri(2, 4);
-    const allDays = [0, 1, 2, 3, 4];
-    for (let k = allDays.length - 1; k > 0; k--){
-      const j = Math.floor(Math.random() * (k + 1));
-      [allDays[k], allDays[j]] = [allDays[j], allDays[k]];
+    const maxCustomers = chance(0.1) ? 3 : (chance(0.45) ? 2 : 1);
+    const selected = [];
+    while (selected.length < maxCustomers){
+      const pool = chance(0.77) ? frequentCustomers : rareCustomers;
+      if (!pool.length) break;
+      const customer = spick(pool);
+      if (!selected.some(c => c.id === customer.id)) selected.push(customer);
+      if (selected.length >= customers.length) break;
     }
-    const workDays = allDays.slice(0, numWorkDays).sort((a, b) => a - b);
 
-    let di = 0;
-    while (di < workDays.length){
-      const dayOffset = workDays[di];
-      const dayMs = weekMondayMs + dayOffset * 86400000;
-      if (dayMs > nowMs){ di++; continue; }
-      const dateISO = new Date(dayMs).toISOString().slice(0, 10);
-
-      const shiftRoll = Math.random();
-      const shiftType = shiftRoll < 0.05 ? "evening" : (shiftRoll < 0.15 ? "fullday" : "normal");
-
-      // Multi-day project: 15% kans als de volgende werkdag ook de volgende kalenderdag is
-      let projectLen = 1;
-      if (shiftType === "normal" && Math.random() < 0.15 && di + 1 < workDays.length && workDays[di + 1] === workDays[di] + 1){
-        projectLen = 2;
-        if (di + 2 < workDays.length && workDays[di + 2] === workDays[di] + 2 && Math.random() < 0.4) projectLen = 3;
-      }
-
-      if (projectLen > 1){
-        const projectCustomer = pick(frequentCustomers);
-        for (let pd = 0; pd < projectLen && di < workDays.length; pd++, di++){
-          const pdMs = weekMondayMs + workDays[di] * 86400000;
-          if (pdMs > nowMs) break;
-          const pdISO = new Date(pdMs).toISOString().slice(0, 10);
-          const log = makeLog(projectCustomer, pdISO, "normal");
-          if (log) logs.push(log);
-        }
-      } else {
-        // Normaal: 1 of 2 klanten op dezelfde dag (25% kans op 2)
-        const numClients = (shiftType === "evening" || shiftType === "fullday") ? 1 : (Math.random() < 0.25 ? 2 : 1);
-        for (let slot = 0; slot < numClients; slot++){
-          let customer;
-          if (Math.random() < 0.75){
-            customer = pick(frequentCustomers);
-          } else {
-            const quarter = Math.floor(month / 3);
-            const eligibleRare = rareCustomers.filter(c => (rareVisitCount.get(`${c.id}-${year}-Q${quarter}`) || 0) < 1);
-            if (eligibleRare.length > 0){
-              customer = pick(eligibleRare);
-              const rk = `${customer.id}-${year}-Q${quarter}`;
-              rareVisitCount.set(rk, (rareVisitCount.get(rk) || 0) + 1);
-            } else {
-              customer = pick(frequentCustomers);
-            }
-          }
-          const log = makeLog(customer, dateISO, slot === 0 ? shiftType : "normal");
-          if (log) logs.push(log);
-        }
-        di++;
-      }
-    }
+    selected.forEach((customer, idx)=>{
+      const log = createLog(customer, cursor, idx);
+      if (!log) return;
+      if (new Date(log.date) > endDate) return;
+      logs.push(log);
+    });
   }
 
   logs.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
 
-  // Group logs by customer
   const logsByCustomer = new Map();
-  for (const l of logs){
-    if (!logsByCustomer.has(l.customerId)) logsByCustomer.set(l.customerId, []);
-    logsByCustomer.get(l.customerId).push(l);
+  for (const log of logs){
+    if (!logsByCustomer.has(log.customerId)) logsByCustomer.set(log.customerId, []);
+    logsByCustomer.get(log.customerId).push(log);
   }
 
-  // Helper: build settlement lines from a group of logs
   function makeLinesFromLogs(logsArr){
     const summary = { workQty: 0, greenQty: 0 };
     for (const log of logsArr){
       for (const it of (log.items || [])){
         if (it.productId === workProduct.id) summary.workQty += Number(it.qty) || 0;
-        if (it.productId === greenProduct.id) summary.greenQty += Number(it.qty) || 0;
+        else if (it.productId === greenProduct.id) summary.greenQty += Number(it.qty) || 0;
       }
     }
     summary.workQty = round2(summary.workQty);
     summary.greenQty = round2(summary.greenQty);
-    const scenarioPick = Math.random();
-    const scenario = scenarioPick < 0.35 ? "invoice" : (scenarioPick < 0.70 ? "cash" : "mixed");
+
+    const modeRoll = rnd();
+    const mode = modeRoll < 0.38 ? "invoice" : (modeRoll < 0.72 ? "cash" : "mixed");
     const lines = [];
-    const pushLine = ({ bucket, productId, description, unit, qty, unitPrice, vatRate }) => {
-      const nQty = round2(Number(qty) || 0);
-      if (nQty <= 0) return;
-      lines.push({ id: uid(), bucket, productId, description, unit, qty: nQty, unitPrice, vatRate });
+    const addLine = ({ bucket, productId, description, unit, qty, unitPrice, vatRate })=>{
+      const quantity = round2(Number(qty) || 0);
+      if (quantity <= 0) return;
+      lines.push({ id: uid(), bucket, productId, description, unit, qty: quantity, unitPrice, vatRate });
     };
-    if (scenario === "invoice"){
-      pushLine({ bucket:"invoice", productId: workProduct.id, description:"Werk", unit:"uur", qty: summary.workQty, unitPrice:38, vatRate:0.21 });
-      pushLine({ bucket:"invoice", productId: greenProduct.id, description:"Groen", unit:"keer", qty: summary.greenQty, unitPrice:38, vatRate:0.21 });
-    } else if (scenario === "cash"){
-      pushLine({ bucket:"cash", productId: workProduct.id, description:"Werk", unit:"uur", qty: summary.workQty, unitPrice:38, vatRate:0 });
-      pushLine({ bucket:"cash", productId: greenProduct.id, description:"Groen", unit:"keer", qty: summary.greenQty, unitPrice:38, vatRate:0 });
+
+    if (mode === "invoice"){
+      addLine({ bucket: "invoice", productId: workProduct.id, description: "Werk", unit: "uur", qty: summary.workQty, unitPrice: 38, vatRate: 0.21 });
+      addLine({ bucket: "invoice", productId: greenProduct.id, description: "Groen", unit: "keer", qty: summary.greenQty, unitPrice: 38, vatRate: 0.21 });
+    } else if (mode === "cash"){
+      addLine({ bucket: "cash", productId: workProduct.id, description: "Werk", unit: "uur", qty: summary.workQty, unitPrice: 38, vatRate: 0 });
+      addLine({ bucket: "cash", productId: greenProduct.id, description: "Groen", unit: "keer", qty: summary.greenQty, unitPrice: 38, vatRate: 0 });
     } else {
-      const invoiceWorkQty = round2(Math.max(0.5, summary.workQty * rf(0.45, 0.75)));
-      const cashWorkQty = round2(Math.max(0.5, summary.workQty - invoiceWorkQty));
-      const invoiceGreenQty = Math.floor(summary.greenQty / 2);
-      const cashGreenQty = Math.max(0, Math.round(summary.greenQty - invoiceGreenQty));
-      pushLine({ bucket:"invoice", productId: workProduct.id, description:"Werk", unit:"uur", qty: invoiceWorkQty, unitPrice:38, vatRate:0.21 });
-      pushLine({ bucket:"cash", productId: workProduct.id, description:"Werk", unit:"uur", qty: cashWorkQty, unitPrice:38, vatRate:0 });
-      pushLine({ bucket:"invoice", productId: greenProduct.id, description:"Groen", unit:"keer", qty: invoiceGreenQty, unitPrice:38, vatRate:0.21 });
-      pushLine({ bucket:"cash", productId: greenProduct.id, description:"Groen", unit:"keer", qty: cashGreenQty, unitPrice:38, vatRate:0 });
+      const invoiceWorkQty = round2(Math.max(0.5, summary.workQty * srf(0.45, 0.78)));
+      const cashWorkQty = round2(Math.max(0, summary.workQty - invoiceWorkQty));
+      const invoiceGreenQty = round2(Math.max(0, summary.greenQty * srf(0.3, 0.7)));
+      const cashGreenQty = round2(Math.max(0, summary.greenQty - invoiceGreenQty));
+      addLine({ bucket: "invoice", productId: workProduct.id, description: "Werk", unit: "uur", qty: invoiceWorkQty, unitPrice: 38, vatRate: 0.21 });
+      addLine({ bucket: "cash", productId: workProduct.id, description: "Werk", unit: "uur", qty: cashWorkQty, unitPrice: 38, vatRate: 0 });
+      addLine({ bucket: "invoice", productId: greenProduct.id, description: "Groen", unit: "keer", qty: invoiceGreenQty, unitPrice: 38, vatRate: 0.21 });
+      addLine({ bucket: "cash", productId: greenProduct.id, description: "Groen", unit: "keer", qty: cashGreenQty, unitPrice: 38, vatRate: 0 });
     }
     return lines;
   }
 
-  // Helper: build one settlement object for a group of logs
-  function makeSettlement(customer, logsArr){
-    if (!logsArr.length) return null;
-    const sorted = [...logsArr].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
-    const lastLog = sorted[sorted.length - 1];
-    const createMs = (lastLog.closedAt || lastLog.createdAt) + ri(1, 3) * 86400000;
-    const ageDays = (nowMs - createMs) / 86400000;
+  const dateWithBusinessTime = (isoDate)=>{
+    const hour = sri(9, 16);
+    const minOptions = [10, 20, 30, 40];
+    return new Date(`${isoDate}T${pad2(hour)}:${pad2(spick(minOptions))}:00`).getTime();
+  };
 
-    let status, invoicePaid, cashPaid;
-    if (ageDays > 60){
-      status = "calculated";
-      invoicePaid = Math.random() < 0.95;
-      cashPaid = Math.random() < 0.95;
-    } else if (ageDays > 15){
-      status = "calculated";
-      invoicePaid = Math.random() < 0.60;
-      cashPaid = Math.random() < 0.60;
+  const nextMonthInvoiceDate = (lastLogDate)=>{
+    const d = new Date(`${lastLogDate}T00:00:00`);
+    const nextMonth = new Date(d.getFullYear(), d.getMonth() + 1, 1);
+    const day = sri(1, 7);
+    return formatISO(new Date(nextMonth.getFullYear(), nextMonth.getMonth(), day));
+  };
+
+  const nextQuarterInvoiceDate = (lastLogDate)=>{
+    const d = new Date(`${lastLogDate}T00:00:00`);
+    const nextQuarterMonth = Math.floor(d.getMonth() / 3) * 3 + 3;
+    const q = new Date(d.getFullYear(), nextQuarterMonth, 1);
+    return formatISO(new Date(q.getFullYear(), q.getMonth(), sri(1, 10)));
+  };
+
+  const settlements = [];
+
+  function buildSettlement(customer, groupedLogs){
+    if (!groupedLogs.length) return null;
+    const sortedLogs = groupedLogs.slice().sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    const lastLog = sortedLogs[sortedLogs.length - 1];
+    let invoiceDate = lastLog.date;
+
+    if (customer.settlementRhythm === "direct"){
+      invoiceDate = formatISO(addDays(new Date(`${lastLog.date}T00:00:00`), sri(0, 3)));
+    } else if (customer.settlementRhythm === "monthly"){
+      invoiceDate = nextMonthInvoiceDate(lastLog.date);
     } else {
-      status = Math.random() < 0.5 ? "draft" : "calculated";
-      invoicePaid = false;
-      cashPaid = false;
+      invoiceDate = nextQuarterInvoiceDate(lastLog.date);
     }
+    if (invoiceDate < lastLog.date) invoiceDate = lastLog.date;
 
-    const lines = makeLinesFromLogs(sorted);
+    const createdAt = dateWithBusinessTime(invoiceDate);
+    const lines = makeLinesFromLogs(sortedLogs);
     if (!lines.length) return null;
 
-    const temp = {
+    const ageDays = (endDate.getTime() - createdAt) / 86400000;
+    let status = "draft";
+    if (ageDays > 120) status = chance(0.92) ? "calculated" : "draft";
+    else if (ageDays > 45) status = chance(0.72) ? "calculated" : "draft";
+    else status = chance(0.25) ? "calculated" : "draft";
+
+    const settlement = {
       id: uid(),
       customerId: customer.id,
-      date: lastLog.date,
-      createdAt: createMs,
-      logIds: sorted.map(l => l.id),
+      date: invoiceDate,
+      invoiceDate,
+      createdAt,
+      logIds: sortedLogs.map(l => l.id),
       lines,
       status,
-      invoicePaid,
-      cashPaid,
+      invoicePaid: false,
+      cashPaid: false,
+      invoiceNumber: null,
       demo: true
     };
 
-    const totals = settlementTotals(temp);
-    if (status === "draft"){
-      temp.invoicePaid = false;
-      temp.cashPaid = false;
-    } else {
-      if (totals.invoiceTotal <= 0) temp.invoicePaid = false;
-      if (totals.cashTotal <= 0) temp.cashPaid = false;
+    const totals = settlementTotals(settlement);
+    if (status !== "draft"){
+      const old = ageDays > 120;
+      settlement.invoicePaid = totals.invoiceTotal > 0 ? chance(old ? 0.88 : 0.55) : false;
+      settlement.cashPaid = totals.cashTotal > 0 ? chance(old ? 0.86 : 0.52) : false;
     }
-    const paid = isSettlementPaid(temp);
-    if (paid) temp.status = "calculated";
-    return temp;
+    return settlement;
   }
 
-  // Build settlements per customer based on their rhythm
-  const settlements = [];
   for (const customer of customers){
     const customerLogs = (logsByCustomer.get(customer.id) || []).slice().sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
     if (!customerLogs.length) continue;
 
     if (customer.settlementRhythm === "direct"){
       for (const log of customerLogs){
-        const s = makeSettlement(customer, [log]);
-        if (s) settlements.push(s);
+        const settlement = buildSettlement(customer, [log]);
+        if (settlement) settlements.push(settlement);
       }
-    } else if (customer.settlementRhythm === "monthly"){
-      const byMonth = new Map();
-      for (const log of customerLogs){
-        const key = log.date.slice(0, 7); // "YYYY-MM"
-        if (!byMonth.has(key)) byMonth.set(key, []);
-        byMonth.get(key).push(log);
-      }
-      for (const logsArr of byMonth.values()){
-        const s = makeSettlement(customer, logsArr);
-        if (s) settlements.push(s);
-      }
-    } else {
-      const byQuarter = new Map();
-      for (const log of customerLogs){
-        const d = new Date(log.date);
-        const key = `${d.getFullYear()}-Q${Math.floor(d.getMonth() / 3)}`;
-        if (!byQuarter.has(key)) byQuarter.set(key, []);
-        byQuarter.get(key).push(log);
-      }
-      for (const logsArr of byQuarter.values()){
-        const s = makeSettlement(customer, logsArr);
-        if (s) settlements.push(s);
-      }
+      continue;
+    }
+
+    const groups = new Map();
+    for (const log of customerLogs){
+      const d = new Date(`${log.date}T00:00:00`);
+      const key = customer.settlementRhythm === "monthly"
+        ? `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`
+        : `${d.getFullYear()}-Q${Math.floor(d.getMonth() / 3) + 1}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(log);
+    }
+
+    for (const groupedLogs of groups.values()){
+      const settlement = buildSettlement(customer, groupedLogs);
+      if (settlement) settlements.push(settlement);
     }
   }
 
-  // Strip internal-only properties before persisting
-  const cleanCustomers = customers.map(({ frequent, settlementRhythm, ...rest }) => rest);
+  const demoCalculated = settlements.filter(s => s.status !== "draft");
+  demoCalculated.sort((a, b)=>{
+    const byDate = String(a.invoiceDate || "").localeCompare(String(b.invoiceDate || ""));
+    if (byDate !== 0) return byDate;
+    return (a.createdAt || 0) - (b.createdAt || 0);
+  });
 
-  st.customers = [...cleanCustomers, ...st.customers];
-  st.logs = [...logs.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)), ...st.logs];
-  st.settlements = [...settlements.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)), ...st.settlements];
+  let nextInvoice = (st.settlements || []).reduce((max, settlement)=>{
+    if (!isSettlementCalculated(settlement)) return max;
+    const parsed = parseInvoiceNumber(settlement.invoiceNumber);
+    return Number.isFinite(parsed) ? Math.max(max, parsed) : max;
+  }, 0);
+
+  const chronologyBase = (st.settlements || []).filter(s => isSettlementCalculated(s));
+  for (const settlement of demoCalculated){
+    settlement.status = "calculated";
+    settlement.isCalculated = true;
+    settlement.markedCalculated = true;
+    settlement.invoiceLocked = true;
+    settlement.invoiceNumber = `F${++nextInvoice}`;
+    settlement.calculatedAt = settlement.createdAt;
+
+    let validationSet = [...chronologyBase, ...demoCalculated];
+    let validation = validateInvoiceChronology(settlement, validationSet);
+    let guard = 0;
+    while (!validation.valid && guard < 30){
+      const minDate = validation.minDate || settlement.invoiceDate;
+      const shifted = addDays(new Date(`${minDate}T00:00:00`), validation.reason === "date_before_previous_invoice" ? 1 : 0);
+      settlement.invoiceDate = formatISO(shifted);
+      settlement.date = settlement.invoiceDate;
+      settlement.createdAt = dateWithBusinessTime(settlement.invoiceDate);
+      settlement.calculatedAt = settlement.createdAt;
+      validationSet = [...chronologyBase, ...demoCalculated];
+      validation = validateInvoiceChronology(settlement, validationSet);
+      guard += 1;
+    }
+  }
+
+  for (const settlement of settlements){
+    if (settlement.status === "draft"){
+      settlement.invoicePaid = false;
+      settlement.cashPaid = false;
+      settlement.invoiceNumber = null;
+      settlement.invoiceLocked = false;
+      settlement.isCalculated = false;
+      settlement.markedCalculated = false;
+      settlement.calculatedAt = null;
+    }
+  }
+
+  const cleanCustomers = customers.map(({ frequent, settlementRhythm, ...rest }) => rest);
+  st.customers = [...cleanCustomers, ...(st.customers || [])];
+  st.logs = [...logs.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)), ...(st.logs || [])];
+  st.settlements = [...settlements.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)), ...(st.settlements || [])];
+  ensureStateSafetyAfterMutations(st);
   return true;
+}
+
+function seedDemoMonths(st, { months = 24, force = false, seed = "demo-v2" } = {}){
+  return seedDemoPeriod(st, { months, force, seed });
 }
 
 function clearDemoData(st){
@@ -838,7 +887,7 @@ function clearDemoData(st){
 
 let state = loadState();
 if (!state.ui?.demoDefaultLoaded){
-  const changed = seedDemoMonths(state, { months: 24, force: false });
+  const changed = seedDemoPeriod(state, { months: 24, force: false, seed: "demo-v2" });
   state.ui = state.ui || {};
   state.ui.demoDefaultLoaded = true;
   if (changed) saveState(state);
@@ -2220,7 +2269,7 @@ function _attachSettingsHandlers(){
 
   $("#fillDemoBtn").onclick = ()=>{
     if (!confirmAction("Demo data toevoegen voor 24 maanden (2 jaar)?")) return;
-    const changed = seedDemoMonths(state, { months: 24, force: false });
+    const changed = seedDemoPeriod(state, { months: 24, force: false, seed: "demo-v2" });
     if (changed){
 
       commit();
@@ -2558,7 +2607,7 @@ function renderSettingsSheet(){
       <div class="card stack">
         <div class="item-title">Demo data</div>
         <div class="meta-text">Demo records: klanten ${demoCounts.customers} · logs ${demoCounts.logs} · afrekeningen ${demoCounts.settlements}</div>
-        <button class="btn" id="fillDemoBtn">Vul demo data (3 maanden)</button>
+        <button class="btn" id="fillDemoBtn">Vul demo data (2 jaar)</button>
         <button class="btn danger" id="clearDemoBtn">Wis demo data</button>
       </div>
 
