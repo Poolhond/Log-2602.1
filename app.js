@@ -3502,8 +3502,43 @@ function calculateSettlement(settlement){
   syncSettlementDatesFromLogs(settlement);
   ensureSettlementInvoiceDefaults(settlement, state.settlements || []);
   const computed = computeSettlementFromLogs(settlement.customerId, settlement.logIds || []);
-  const previousBucket = new Map((settlement.lines || []).map(li => [li.productId + "|" + li.description, li.bucket]));
-  settlement.lines = computed.lines.map(li => ({ ...li, bucket: previousBucket.get(li.productId + "|" + li.description) || li.bucket }));
+  const sig = (line)=>`${line?.productId || ""}||${String(line?.description || line?.name || "").trim().toLowerCase()}||${line?.unit || ""}`;
+  const existingLines = settlement.lines || [];
+  const computedLines = computed.lines || [];
+  const computedBucketSigSet = new Set(computedLines.map(li => `${li.bucket || "invoice"}||${sig(li)}`));
+  const existingByBucketSig = new Map();
+  for (const line of existingLines){
+    const bucket = line.bucket || "invoice";
+    const key = `${bucket}||${sig(line)}`;
+    if (!existingByBucketSig.has(key)) existingByBucketSig.set(key, line);
+  }
+
+  const mergedLines = existingLines.filter(line => {
+    const bucket = line.bucket || "invoice";
+    const key = `${bucket}||${sig(line)}`;
+    return line.manual === true || !computedBucketSigSet.has(key);
+  });
+
+  for (const li of computedLines){
+    const bucket = li.bucket || "invoice";
+    const key = `${bucket}||${sig(li)}`;
+    const existing = existingByBucketSig.get(key);
+    if (existing){
+      mergedLines.push({
+        ...existing,
+        qty: li.qty,
+        unitPrice: li.unitPrice,
+        vatRate: li.vatRate,
+        description: li.description,
+        unit: li.unit,
+        productId: li.productId
+      });
+      continue;
+    }
+    mergedLines.push({ ...li, id: li.id || uid(), bucket });
+  }
+
+  settlement.lines = mergedLines;
   ensureDefaultSettlementLines(settlement);
   settlement.markedCalculated = true;
   settlement.isCalculated = true;
