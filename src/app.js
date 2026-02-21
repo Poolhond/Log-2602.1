@@ -386,9 +386,9 @@ function loadState(){
     if (!("cashPaid" in s)) s.cashPaid = false;
     if (!("invoiceAmount" in s)) s.invoiceAmount = 0;
     if (!("cashAmount" in s)) s.cashAmount = 0;
-    if (!("invoiceNumber" in s)) s.invoiceNumber = null;
-    if (!("invoiceDate" in s)) s.invoiceDate = s.date || todayISO();
     if (!("invoiceLocked" in s)) s.invoiceLocked = Boolean(s.isCalculated);
+    syncSettlementDatesFromLogs(s, st);
+    ensureSettlementInvoiceDefaults(s, st.settlements || []);
     syncSettlementAmounts(s);
     if (!("demo" in s)) s.demo = false;
   }
@@ -1056,6 +1056,40 @@ function getNextInvoiceNumber(settlements = state.settlements || []){
   return `F${highest + 1}`;
 }
 
+function latestLinkedLogDate(settlement, sourceState = state){
+  const linkedDates = (settlement?.logIds || [])
+    .map(id => sourceState.logs.find(l => l.id === id)?.date)
+    .filter(Boolean)
+    .sort();
+  return linkedDates[linkedDates.length - 1] || "";
+}
+
+function syncSettlementDatesFromLogs(settlement, sourceState = state){
+  if (!settlement) return;
+  const fallbackDate = todayISO();
+  const maxLogDate = latestLinkedLogDate(settlement, sourceState);
+  if (maxLogDate){
+    settlement.date = maxLogDate;
+    if (!settlement.invoiceLocked) settlement.invoiceDate = maxLogDate;
+  } else if (!settlement.date){
+    settlement.date = fallbackDate;
+  }
+
+  if (!settlement.invoiceDate){
+    settlement.invoiceDate = settlement.date || fallbackDate;
+  }
+}
+
+function ensureSettlementInvoiceDefaults(settlement, settlements = state.settlements || []){
+  if (!settlement) return;
+  if (!settlement.invoiceNumber || !String(settlement.invoiceNumber).trim()){
+    settlement.invoiceNumber = getNextInvoiceNumber(settlements);
+  }
+  if (!settlement.invoiceDate){
+    settlement.invoiceDate = settlement.date || todayISO();
+  }
+}
+
 function validateInvoiceChronology(settlement, settlements = state.settlements || []){
   if (!settlement) return { valid: false, reason: "missing_settlement" };
 
@@ -1410,6 +1444,8 @@ const actions = {
     if (state.activeLogId === logId) state.activeLogId = null;
     for (const s of state.settlements){
       s.logIds = (s.logIds || []).filter(id => id !== logId);
+      syncSettlementDatesFromLogs(s);
+      ensureSettlementInvoiceDefaults(s, state.settlements || []);
     }
     commit();
   },
@@ -1428,7 +1464,11 @@ const actions = {
     return s;
   },
   linkLogToSettlement(logId, settlementId){
-    for (const s of state.settlements){ s.logIds = (s.logIds || []).filter(x => x !== logId); }
+    for (const s of state.settlements){
+      s.logIds = (s.logIds || []).filter(x => x !== logId);
+      syncSettlementDatesFromLogs(s);
+      ensureSettlementInvoiceDefaults(s, state.settlements || []);
+    }
     if (settlementId === "none") return commit();
     if (settlementId === "new"){
       const log = state.logs.find(l => l.id === logId);
@@ -1443,6 +1483,8 @@ const actions = {
         invoiceLocked: false
       };
       s.lines = computeSettlementFromLogs(s.customerId, s.logIds).lines;
+      syncSettlementDatesFromLogs(s);
+      ensureSettlementInvoiceDefaults(s, state.settlements || []);
       state.settlements.unshift(s);
       commit();
       return s;
@@ -1452,12 +1494,8 @@ const actions = {
     s.logIds = Array.from(new Set([...(s.logIds || []), logId]));
     const prev = new Map((s.lines || []).map(li => [li.productId + "|" + li.description, li.bucket]));
     s.lines = computeSettlementFromLogs(s.customerId, s.logIds).lines.map(li => ({ ...li, bucket: prev.get(li.productId + "|" + li.description) || li.bucket }));
-    const linkedLogs = (s.logIds || [])
-      .map(id => state.logs.find(l => l.id === id))
-      .filter(Boolean);
-    if (linkedLogs.length) {
-      s.date = linkedLogs.map(l => l.date).sort().pop();
-    }
+    syncSettlementDatesFromLogs(s);
+    ensureSettlementInvoiceDefaults(s, state.settlements || []);
     commit();
     return s;
   },
@@ -1465,9 +1503,9 @@ const actions = {
     const settlement = state.settlements.find(x => x.id === settlementId);
     if (!settlement) return { ok: false, reason: "not_found" };
 
-    if (!settlement.invoiceNumber) settlement.invoiceNumber = getNextInvoiceNumber(state.settlements || []);
+    syncSettlementDatesFromLogs(settlement);
+    ensureSettlementInvoiceDefaults(settlement, state.settlements || []);
     settlement.invoiceNumber = String(settlement.invoiceNumber || "").trim().toUpperCase();
-    if (!settlement.invoiceDate) settlement.invoiceDate = settlement.date || todayISO();
 
     const validation = validateInvoiceChronology(settlement, state.settlements || []);
     if (!validation.valid) return { ok: false, reason: validation.reason, minDate: validation.minDate };
@@ -1499,6 +1537,8 @@ const actions = {
     const settlement = state.settlements.find(x => x.id === settlementId);
     if (!settlement || typeof updater !== "function") return;
     updater(settlement);
+    syncSettlementDatesFromLogs(settlement);
+    ensureSettlementInvoiceDefaults(settlement, state.settlements || []);
     commit();
   },
   addProduct(product){ state.products.unshift(product); commit(); return product; },
@@ -3470,6 +3510,8 @@ function renderSettlementStatusIcons(settlement){
 
 function calculateSettlement(settlement){
   if (!settlement) return;
+  syncSettlementDatesFromLogs(settlement);
+  ensureSettlementInvoiceDefaults(settlement, state.settlements || []);
   const computed = computeSettlementFromLogs(settlement.customerId, settlement.logIds || []);
   const previousBucket = new Map((settlement.lines || []).map(li => [li.productId + "|" + li.description, li.bucket]));
   settlement.lines = computed.lines.map(li => ({ ...li, bucket: previousBucket.get(li.productId + "|" + li.description) || li.bucket }));
@@ -3550,9 +3592,9 @@ function renderSettlementSheet(id){
   if (!("markedCalculated" in s)) s.markedCalculated = s.status === "calculated";
   if (!("isCalculated" in s)) s.isCalculated = isSettlementCalculated(s);
   if (!("calculatedAt" in s)) s.calculatedAt = s.isCalculated ? (s.createdAt || now()) : null;
-  if (!("invoiceNumber" in s)) s.invoiceNumber = getNextInvoiceNumber(state.settlements || []);
-  if (!("invoiceDate" in s)) s.invoiceDate = s.date || todayISO();
   if (!("invoiceLocked" in s)) s.invoiceLocked = Boolean(s.isCalculated);
+  syncSettlementDatesFromLogs(s);
+  ensureSettlementInvoiceDefaults(s, state.settlements || []);
   ensureDefaultSettlementLines(s);
   syncSettlementStatus(s);
 
