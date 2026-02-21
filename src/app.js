@@ -3445,6 +3445,8 @@ function renderSettlementSheet(id){
   const summary = settlementLogbookSummary(s);
 
   $('#sheetActions').innerHTML = '';
+  const showInvoiceSection = pay.invoiceTotal !== 0;
+  const showCashSection = pay.cashTotal !== 0;
   $('#sheetBody').style.paddingBottom = 'calc(var(--bottom-tabbar-height) + var(--status-tabbar-height) + env(safe-area-inset-bottom) + 24px)';
 
   $('#sheetBody').innerHTML = `
@@ -3475,17 +3477,21 @@ function renderSettlementSheet(id){
         ${isEdit ? `<div class="settlement-totals-row mono tabular"><span class="totals-time">${formatDurationCompact(Math.floor(summary.totalWorkMs/60000))}</span><span class="totals-price">${formatMoneyEUR(summary.totalLogPrice)}</span><span class="totals-products">${summary.linkedCount}</span></div>` : `<button class="settlement-totals-row settlement-totals-button mono tabular" id="openSettlementOverview" type="button"><span class="totals-time">${formatDurationCompact(Math.floor(summary.totalWorkMs/60000))}</span><span class="totals-price">${formatMoneyEUR(summary.totalLogPrice)}</span><span class="totals-products">${summary.linkedCount}</span></button>`}
       </div>
 
+      ${showInvoiceSection ? `
       <div class="section stack">
         <div class="section-title-row"><h2>Factuur</h2><div class="section-value">${formatMoneyEUR(pay.invoiceTotal)}</div></div>
         ${renderLinesTable(s, 'invoice', { readOnly: !isEdit })}
         ${isEdit ? `<button class="btn" id="addInvoiceLine">+ regel</button>` : ""}
       </div>
+      ` : ""}
 
+      ${showCashSection ? `
       <div class="section stack">
         <div class="section-title-row"><h2>Cash</h2><div class="section-value">${formatMoneyEUR(pay.cashTotal)}</div></div>
         ${renderLinesTable(s, 'cash', { readOnly: !isEdit })}
         ${isEdit ? `<button class="btn" id="addCashLine">+ regel</button>` : ""}
       </div>
+      ` : ""}
 
       <div class="section stack">
         <h2>Notitie</h2>
@@ -3669,9 +3675,10 @@ function renderSettlementSheet(id){
 function renderLinesTable(settlement, bucket, { readOnly = false } = {}){
   const lines = (settlement.lines||[]).filter(l => (l.bucket||'invoice')===bucket);
   const totals = settlementTotals(settlement);
+  const visibleLines = lines.filter(line => lineAmount(line) !== 0);
 
   if (readOnly){
-    const compactRows = (lines.map(l=>{
+    const compactRows = (visibleLines.map(l=>{
       const rowTotal = lineAmount(l);
       const productLabel = esc((getProduct(l.productId)?.name) || l.name || l.description || '—');
       const qty = Number(l.qty) || 0;
@@ -3688,37 +3695,38 @@ function renderLinesTable(settlement, bucket, { readOnly = false } = {}){
       `;
     }).join('')) || `<div class="small">Geen regels</div>`;
 
-    const compactTotals = bucket === 'invoice'
-      ? `
-        <div class="summary-row"><span class="label">Subtotaal</span><span class="num mono">${formatMoneyEUR(totals.invoiceSubtotal)}</span></div>
-        <div class="summary-row"><span class="label">BTW</span><span class="num mono">${formatMoneyEUR(totals.invoiceVat)}</span></div>
-        <div class="summary-row"><span class="label"><strong>Totaal</strong></span><span class="num mono"><strong>${formatMoneyEUR(totals.invoiceTotal)}</strong></span></div>
-      `
-      : `<div class="summary-row"><span class="label"><strong>Totaal</strong></span><span class="num mono"><strong>${formatMoneyEUR(totals.cashTotal)}</strong></span></div>`;
+    const compactInvoiceTotals = `
+      ${totals.invoiceSubtotal !== 0 ? `<div class="summary-row"><span class="label">Subtotaal</span><span class="num mono">${formatMoneyEUR(totals.invoiceSubtotal)}</span></div>` : ''}
+      ${totals.invoiceVat !== 0 ? `<div class="summary-row"><span class="label">BTW</span><span class="num mono">${formatMoneyEUR(totals.invoiceVat)}</span></div>` : ''}
+      ${totals.invoiceTotal !== 0 ? `<div class="summary-row"><span class="label"><strong>Totaal</strong></span><span class="num mono"><strong>${formatMoneyEUR(totals.invoiceTotal)}</strong></span></div>` : ''}
+    `;
+    const compactCashTotals = totals.cashTotal !== 0
+      ? `<div class="summary-row"><span class="label"><strong>Totaal</strong></span><span class="num mono"><strong>${formatMoneyEUR(totals.cashTotal)}</strong></span></div>`
+      : '';
+    const compactTotals = bucket === 'invoice' ? compactInvoiceTotals : compactCashTotals;
 
     return `<div class="summary-rows">${compactRows}${compactTotals}</div>`;
   }
 
-  const footer = bucket === 'invoice'
-    ? `
-      <div class="settlement-lines-footer mono tabular">
-        <div>Subtotaal</div><div></div><div></div><div class="num">${formatMoneyEUR(totals.invoiceSubtotal)}</div><div></div>
-        <div>BTW 21%</div><div></div><div></div><div class="num">${formatMoneyEUR(totals.invoiceVat)}</div><div></div>
-        <div>Totaal</div><div></div><div></div><div class="num">${formatMoneyEUR(totals.invoiceTotal)}</div><div></div>
-      </div>
-    `
-    : `
-      <div class="settlement-lines-footer mono tabular">
-        <div>Totaal</div><div></div><div></div><div class="num">${formatMoneyEUR(totals.cashTotal)}</div><div></div>
-      </div>
-    `;
+  const invoiceFooterRows = `
+    ${totals.invoiceSubtotal !== 0 ? `<div>Subtotaal</div><div></div><div></div><div class="num">${formatMoneyEUR(totals.invoiceSubtotal)}</div><div></div>` : ''}
+    ${totals.invoiceVat !== 0 ? `<div>BTW 21%</div><div></div><div></div><div class="num">${formatMoneyEUR(totals.invoiceVat)}</div><div></div>` : ''}
+    ${totals.invoiceTotal !== 0 ? `<div>Totaal</div><div></div><div></div><div class="num">${formatMoneyEUR(totals.invoiceTotal)}</div><div></div>` : ''}
+  `;
+  const cashFooterRows = totals.cashTotal !== 0
+    ? `<div>Totaal</div><div></div><div></div><div class="num">${formatMoneyEUR(totals.cashTotal)}</div><div></div>`
+    : '';
+  const footerRows = bucket === 'invoice' ? invoiceFooterRows : cashFooterRows;
+  const footer = footerRows.trim()
+    ? `<div class="settlement-lines-footer mono tabular">${footerRows}</div>`
+    : '';
 
   return `
     <div class="settlement-lines-table">
       <div class="settlement-lines-grid settlement-lines-head mono">
         <div>Product</div><div>Aantal</div><div>€/eenheid</div><div class="num">Totaal</div><div></div>
       </div>
-      ${(lines.map(l=>{
+      ${(visibleLines.map(l=>{
         const rowTotal = lineAmount(l);
         const productValue = l.productId || '';
         return `
