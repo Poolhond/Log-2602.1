@@ -2609,6 +2609,23 @@ function renderSheet(){
   if (active.view === "settings") renderSettingsSheet();
 }
 
+function renderSheetKeepScroll(){
+  const before = document.getElementById("sheetBody");
+  const top = before ? before.scrollTop : 0;
+  const left = before ? before.scrollLeft : 0;
+  renderSheet();
+  requestAnimationFrame(() => {
+    const after = document.getElementById("sheetBody");
+    if (!after) return;
+    after.scrollTop = top;
+    after.scrollLeft = left;
+    requestAnimationFrame(() => {
+      after.scrollTop = top;
+      after.scrollLeft = left;
+    });
+  });
+}
+
 function renderCustomersSheet(){
   const body = $("#sheetBody");
   const list = state.customers.map(c => `
@@ -3822,11 +3839,11 @@ function renderSettlementSheet(id){
         btn,
         ()=>{
           adjustSettlementQuickQty(s.id, bucket, kind, step);
-          renderSheet();
+          renderSheetKeepScroll();
         },
         ()=>{
           adjustSettlementQuickQty(s.id, bucket, kind, step > 0 ? 0.5 : -0.5);
-          renderSheet();
+          renderSheetKeepScroll();
         }
       );
     });
