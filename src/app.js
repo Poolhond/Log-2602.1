@@ -886,12 +886,6 @@ function clearDemoData(st){
 }
 
 let state = loadState();
-if (!state.ui?.demoDefaultLoaded){
-  const changed = seedDemoPeriod(state, { months: 24, force: false, seed: "demo-v2" });
-  state.ui = state.ui || {};
-  state.ui.demoDefaultLoaded = true;
-  if (changed) saveState(state);
-}
 
 // ---------- Computations ----------
 function sumWorkMs(log){
@@ -1354,6 +1348,13 @@ const ui = {
     qty: "1"
   }
 };
+
+if (!state.ui?.demoDefaultLoaded){
+  const changed = seedDemoPeriod(state, { months: 24, force: false, seed: "demo-v2" });
+  state.ui = state.ui || {};
+  state.ui.demoDefaultLoaded = true;
+  if (changed) saveState(state);
+}
 
 // Guardrail: keep state mutations inside actions + commit.
 function commit(){
