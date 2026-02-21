@@ -3716,7 +3716,6 @@ function renderSettlementSheet(id){
       <div class="section stack">
         <h2>Acties</h2>
         <div class="compact-row"><label>Klant</label><div><select id="sCustomer">${customerOptions}</select></div></div>
-        <div class="compact-row"><label>Datum</label><div><input id="sDate" type="date" value="${esc(s.date||todayISO())}" ${invoiceLocked ? "disabled" : ""} /></div></div>
         <button class="btn danger" id="delSettlement">Verwijder</button>
       </div>` : ""}
     </div>
@@ -3784,13 +3783,6 @@ function renderSettlementSheet(id){
       actions.editSettlement(s.id, (draft)=>{
         draft.customerId = $('#sCustomer').value;
         draft.logIds = [];
-      });
-      renderSheet();
-    });
-    $('#sDate')?.addEventListener('change', ()=>{
-      if (invoiceLocked) return;
-      actions.editSettlement(s.id, (draft)=>{
-        draft.date = ($('#sDate').value||'').trim() || todayISO();
       });
       renderSheet();
     });
