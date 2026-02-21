@@ -972,6 +972,68 @@ function splitLogItems(log){
   const otherItems = items.filter(item => !isGreenProduct(item) && !isWorkProductId(item.productId));
   return { greenItemQty, otherItems };
 }
+function bindStepButton(btn, onTap, onHold){
+  let pressTimer = null;
+  let didLongPress = false;
+  let isPressing = false;
+
+  const clearPress = ()=>{
+    if (pressTimer){
+      clearTimeout(pressTimer);
+      pressTimer = null;
+    }
+    isPressing = false;
+  };
+
+  const down = (e)=>{
+    if (isPressing) return;
+    isPressing = true;
+    didLongPress = false;
+    e.preventDefault();
+    e.stopPropagation();
+    pressTimer = setTimeout(()=>{
+      if (!isPressing) return;
+      didLongPress = true;
+      onHold();
+    }, 450);
+  };
+
+  const up = (e)=>{
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isPressing) return;
+    const wasLongPress = didLongPress;
+    clearPress();
+    if (!wasLongPress) onTap();
+  };
+
+  btn.classList.add("no-select");
+  btn.addEventListener("contextmenu", (e)=>{
+    e.preventDefault();
+    e.stopPropagation();
+  });
+
+  btn.addEventListener("pointerdown", down);
+  btn.addEventListener("pointerup", up);
+  btn.addEventListener("pointercancel", up);
+  btn.addEventListener("pointerleave", up);
+
+  btn.addEventListener("touchstart", down, { passive:false });
+  btn.addEventListener("touchend", up, { passive:false });
+  btn.addEventListener("touchcancel", up, { passive:false });
+  btn.addEventListener("touchmove", (e)=>{
+    if (!isPressing) return;
+    e.preventDefault();
+    e.stopPropagation();
+  }, { passive:false });
+
+  btn.addEventListener("click", (e)=>{
+    if (!didLongPress) return;
+    didLongPress = false;
+    e.preventDefault();
+    e.stopPropagation();
+  });
+}
 function adjustLogGreenQty(logId, delta){
   actions.editLog(logId, (draft)=>{
     draft.items = draft.items || [];
@@ -989,6 +1051,34 @@ function adjustLogGreenQty(logId, delta){
     }
     target.qty = nextQty;
     target.unitPrice = 0;
+  });
+}
+function findSettlementQuickLine(lines, bucket, kind){
+  const bucketLines = (lines || []).filter(line => (line.bucket || "invoice") === bucket);
+  const normalizedKind = kind === "green" ? "groen" : "werk";
+  const product = (state.products || []).find(p => (p.name || "").trim().toLowerCase() === normalizedKind) || null;
+
+  if (product){
+    const byProductId = bucketLines.find(line => line.productId === product.id);
+    if (byProductId) return byProductId;
+  }
+
+  return bucketLines.find(line => {
+    const label = String(line.name || line.description || pname(line.productId) || "").trim().toLowerCase();
+    return label === normalizedKind;
+  }) || null;
+}
+function formatQuickQty(value){
+  const rounded = round2(Number(value) || 0);
+  return Number.isInteger(rounded) ? String(rounded) : String(rounded);
+}
+function adjustSettlementQuickQty(settlementId, bucket, kind, delta){
+  actions.editSettlement(settlementId, (draft)=>{
+    draft.lines = draft.lines || [];
+    const line = findSettlementQuickLine(draft.lines, bucket, kind);
+    if (!line) return;
+    const nextQty = Math.max(0, round2((Number(line.qty) || 0) + Number(delta || 0)));
+    line.qty = nextQty;
   });
 }
 function countGreenItems(log){
@@ -3216,69 +3306,6 @@ function renderLogSheet(id){
     });
   }
 
-  const bindStepButton = (btn, onTap, onHold)=>{
-    let pressTimer = null;
-    let didLongPress = false;
-    let isPressing = false;
-
-    const clearPress = ()=>{
-      if (pressTimer){
-        clearTimeout(pressTimer);
-        pressTimer = null;
-      }
-      isPressing = false;
-    };
-
-    const down = (e)=>{
-      if (isPressing) return;
-      isPressing = true;
-      didLongPress = false;
-      e.preventDefault();
-      e.stopPropagation();
-      pressTimer = setTimeout(()=>{
-        if (!isPressing) return;
-        didLongPress = true;
-        onHold();
-      }, 450);
-    };
-
-    const up = (e)=>{
-      e.preventDefault();
-      e.stopPropagation();
-      if (!isPressing) return;
-      const wasLongPress = didLongPress;
-      clearPress();
-      if (!wasLongPress) onTap();
-    };
-
-    btn.classList.add("no-select");
-    btn.addEventListener("contextmenu", (e)=>{
-      e.preventDefault();
-      e.stopPropagation();
-    });
-
-    btn.addEventListener("pointerdown", down);
-    btn.addEventListener("pointerup", up);
-    btn.addEventListener("pointercancel", up);
-    btn.addEventListener("pointerleave", up);
-
-    btn.addEventListener("touchstart", down, { passive:false });
-    btn.addEventListener("touchend", up, { passive:false });
-    btn.addEventListener("touchcancel", up, { passive:false });
-    btn.addEventListener("touchmove", (e)=>{
-      if (!isPressing) return;
-      e.preventDefault();
-      e.stopPropagation();
-    }, { passive:false });
-
-    btn.addEventListener("click", (e)=>{
-      if (!didLongPress) return;
-      didLongPress = false;
-      e.preventDefault();
-      e.stopPropagation();
-    });
-  };
-
   $("#sheetBody").querySelectorAll("[data-green-qty-step]").forEach(btn=>{
     const baseStep = Number(btn.getAttribute("data-green-qty-step") || "0");
     bindStepButton(
@@ -3821,6 +3848,24 @@ function renderSettlementSheet(id){
       renderSheet();
     });
 
+    $('#sheetBody').querySelectorAll('[data-settle-quick-step]').forEach(btn=>{
+      const raw = String(btn.getAttribute('data-settle-quick-step') || '');
+      const [bucket, kind, stepRaw] = raw.split('|');
+      const step = Number(stepRaw || '0');
+      if (!bucket || !kind || !Number.isFinite(step) || step === 0) return;
+      bindStepButton(
+        btn,
+        ()=>{
+          adjustSettlementQuickQty(s.id, bucket, kind, step);
+          renderSheet();
+        },
+        ()=>{
+          adjustSettlementQuickQty(s.id, bucket, kind, step > 0 ? 0.5 : -0.5);
+          renderSheet();
+        }
+      );
+    });
+
     $('#sheetBody').querySelectorAll('[data-line-qty]').forEach(inp=>{
       inp.addEventListener('change', ()=>{
         const line = s.lines.find(x=>x.id===inp.getAttribute('data-line-qty'));
@@ -3889,7 +3934,10 @@ function renderSettlementSheet(id){
 function renderLinesTable(settlement, bucket, { readOnly = false } = {}){
   const lines = (settlement.lines||[]).filter(l => (l.bucket||'invoice')===bucket);
   const totals = settlementTotals(settlement);
-  const visibleLines = lines;
+  const workQuickLine = findSettlementQuickLine(lines, bucket, "work");
+  const greenQuickLine = findSettlementQuickLine(lines, bucket, "green");
+  const quickLineIds = new Set([workQuickLine?.id, greenQuickLine?.id].filter(Boolean));
+  const visibleLines = readOnly ? lines : lines.filter(line => !quickLineIds.has(line.id));
 
   if (readOnly){
     const compactRows = (visibleLines.map(l=>{
@@ -3920,6 +3968,26 @@ function renderLinesTable(settlement, bucket, { readOnly = false } = {}){
     return `<div class="summary-rows">${compactRows}${compactTotals}</div>`;
   }
 
+  const renderQuickRow = (line, kind)=>{
+    if (!line) return "";
+    const qty = formatQuickQty(line.qty);
+    const icon = kind === "green"
+      ? `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M5 15c2.2-6.2 8.4-8.7 14-9-1.1 5.7-3 11.8-9 14-4 1.4-7-1.3-5-5Z" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.5 14.5c2 .2 4.6-.4 7.5-2.4" stroke-linecap="round"/></svg>`
+      : `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="7"/><path d="M12 8.6v3.8l2.7 1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    return `
+      <div class="settlement-quick-row green-row no-select">
+        <span class="settlement-quick-icon" aria-hidden="true">${icon}</span>
+        <div class="settlement-quick-qty mono tabular">${esc(qty)}</div>
+        <div class="settlement-quick-controls">
+          <button class="iconbtn iconbtn-sm" type="button" data-settle-quick-step="${bucket}|${kind}|-1" aria-label="${kind === "green" ? "Groen" : "Werk"} min">−</button>
+          <button class="iconbtn iconbtn-sm" type="button" data-settle-quick-step="${bucket}|${kind}|1" aria-label="${kind === "green" ? "Groen" : "Werk"} plus">+</button>
+        </div>
+      </div>
+    `;
+  };
+
+  const quickRows = `${renderQuickRow(workQuickLine, "work")}${renderQuickRow(greenQuickLine, "green")}`;
+
   const invoiceFooterRows = `
     <div>Subtotaal</div><div></div><div></div><div class="num">${moneyOrBlank(totals.invoiceSubtotal)}</div><div></div>
     <div>BTW 21%</div><div></div><div></div><div class="num">${moneyOrBlank(totals.invoiceVat)}</div><div></div>
@@ -3931,6 +3999,8 @@ function renderLinesTable(settlement, bucket, { readOnly = false } = {}){
 
   return `
     <div class="settlement-lines-table">
+      ${quickRows ? `<div class="settlement-quick-list">${quickRows}</div>` : ""}
+      ${visibleLines.length ? `<div class="item-sub settlement-other-label">Andere producten</div>` : ""}
       <div class="settlement-lines-grid settlement-lines-head mono">
         <div>Product</div><div>Aantal</div><div>€/eenheid</div><div class="num">Totaal</div><div></div>
       </div>
