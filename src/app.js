@@ -832,7 +832,7 @@ function seedDemoPeriod(st, { months = 24, force = false, seed = "demo-v2" } = {
     settlement.isCalculated = true;
     settlement.markedCalculated = true;
     settlement.invoiceLocked = true;
-    settlement.invoiceNumber = `F${++nextInvoice}`;
+    settlement.invoiceNumber = settlementHasInvoiceComponent(settlement) ? `F${++nextInvoice}` : null;
     settlement.calculatedAt = settlement.createdAt;
 
     let validationSet = [...chronologyBase, ...demoCalculated];
@@ -1040,6 +1040,14 @@ function getSettlementTotals(settlement){
   };
 }
 
+function settlementHasInvoiceComponent(settlement, totals = getSettlementTotals(settlement || {})){
+  return (
+    Number(settlement?.invoiceAmount ?? 0) > 0 ||
+    Number(totals?.invoiceTotal ?? 0) > 0 ||
+    Number(settlement?.cardAmount ?? 0) > 0
+  );
+}
+
 function parseInvoiceNumber(invoiceNumber){
   const match = String(invoiceNumber || "").trim().toUpperCase().match(/^F(\d+)$/);
   if (!match) return null;
@@ -1082,7 +1090,7 @@ function syncSettlementDatesFromLogs(settlement, sourceState = state){
 
 function ensureSettlementInvoiceDefaults(settlement, settlements = state.settlements || []){
   if (!settlement) return;
-  if (!settlement.invoiceNumber || !String(settlement.invoiceNumber).trim()){
+  if (settlementHasInvoiceComponent(settlement) && (!settlement.invoiceNumber || !String(settlement.invoiceNumber).trim())){
     settlement.invoiceNumber = getNextInvoiceNumber(settlements);
   }
   if (!settlement.invoiceDate){
@@ -1296,7 +1304,7 @@ function settlementPaymentState(settlement){
   const invoiceTotals = bucketTotals(settlement.lines, "invoice");
   const cashTotals = bucketTotals(settlement.lines, "cash");
   const { invoiceTotal, cashTotal } = getSettlementTotals(settlement);
-  const hasInvoice = invoiceTotal > 0;
+  const hasInvoice = settlementHasInvoiceComponent(settlement, { invoiceTotal, cashTotal });
   const hasCash = cashTotal > 0;
   const isPaid = getSettlementVisualState(settlement).state === "paid";
   return { invoiceTotals, cashTotals, invoiceTotal, cashTotal, hasInvoice, hasCash, isPaid };
@@ -1455,7 +1463,7 @@ const actions = {
       id: uid(), customerId, date: invoiceDate, createdAt: now(), logIds: [], lines: [],
       status: "draft", markedCalculated: false, isCalculated: false, calculatedAt: null,
       invoiceAmount: 0, cashAmount: 0, invoicePaid: false, cashPaid: false,
-      invoiceNumber: getNextInvoiceNumber(state.settlements || []),
+      invoiceNumber: null,
       invoiceDate,
       invoiceLocked: false
     };
@@ -1478,7 +1486,7 @@ const actions = {
         id: uid(), customerId: log.customerId, date: invoiceDate, createdAt: now(), logIds: [logId], lines: [],
         status: "draft", markedCalculated: false, isCalculated: false, calculatedAt: null,
         invoiceAmount: 0, cashAmount: 0, invoicePaid: false, cashPaid: false,
-        invoiceNumber: getNextInvoiceNumber(state.settlements || []),
+        invoiceNumber: null,
         invoiceDate,
         invoiceLocked: false
       };
@@ -1505,10 +1513,14 @@ const actions = {
 
     syncSettlementDatesFromLogs(settlement);
     ensureSettlementInvoiceDefaults(settlement, state.settlements || []);
-    settlement.invoiceNumber = String(settlement.invoiceNumber || "").trim().toUpperCase();
+    if (settlementHasInvoiceComponent(settlement)){
+      settlement.invoiceNumber = String(settlement.invoiceNumber || "").trim().toUpperCase();
+    }
 
-    const validation = validateInvoiceChronology(settlement, state.settlements || []);
-    if (!validation.valid) return { ok: false, reason: validation.reason, minDate: validation.minDate };
+    if (settlementHasInvoiceComponent(settlement)){
+      const validation = validateInvoiceChronology(settlement, state.settlements || []);
+      if (!validation.valid) return { ok: false, reason: validation.reason, minDate: validation.minDate };
+    }
 
     calculateSettlement(settlement);
     commit();
@@ -3616,7 +3628,7 @@ function renderSettlementSheet(id){
   const summary = settlementLogbookSummary(s);
 
   $('#sheetActions').innerHTML = '';
-  const showInvoiceSection = true;
+  const showInvoiceSection = pay.hasInvoice;
   const showCashSection = true;
   $('#sheetBody').style.paddingBottom = 'calc(var(--bottom-tabbar-height) + var(--status-tabbar-height) + env(safe-area-inset-bottom) + 24px)';
 
