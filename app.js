@@ -3468,6 +3468,33 @@ function settlementLogbookSummary(s){
   return { linkedCount: linkedLogs.length, totalWorkMs, totalProductCosts, totalLogPrice };
 }
 
+function settlementLinkedLogs(s){
+  return (s.logIds || [])
+    .map(id => state.logs.find(l => l.id === id))
+    .filter(Boolean);
+}
+
+function settlementLogbookTotals(s){
+  const linkedLogs = settlementLinkedLogs(s);
+  const totalWorkMs = linkedLogs.reduce((acc, log) => acc + sumWorkMs(log), 0);
+  let totalGreenUnits = 0;
+  let totalExtraProducts = 0;
+
+  for (const log of linkedLogs){
+    for (const item of (log.items || [])){
+      if (isWorkProduct(item)) continue;
+      if (isGreenProduct(item)) totalGreenUnits += Number(item.qty) || 0;
+      else totalExtraProducts += Number(item.qty) || 0;
+    }
+  }
+
+  return {
+    totalWorkMs,
+    totalGreenUnits: round2(totalGreenUnits),
+    totalExtraProducts: round2(totalExtraProducts)
+  };
+}
+
 function syncSettlementAmounts(settlement){
   if (!settlement) return;
   const totals = getSettlementTotals(settlement);
@@ -3657,16 +3684,104 @@ function renderSettlementSheet(id){
 
   const pay = settlementPaymentState(s);
   const visual = getSettlementVisualState(s);
-  const summary = settlementLogbookSummary(s);
+  const showInvoiceSection = pay.hasInvoice;
+  const allLines = s.lines || [];
+  const workInvoiceLine = findSettlementQuickLine(allLines, 'invoice', 'work');
+  const workCashLine = findSettlementQuickLine(allLines, 'cash', 'work');
+  const greenInvoiceLine = findSettlementQuickLine(allLines, 'invoice', 'green');
+  const greenCashLine = findSettlementQuickLine(allLines, 'cash', 'green');
+  const logbookTotals = settlementLogbookTotals(s);
+
+  const lineLabel = (line)=> String((getProduct(line.productId)?.name) || line.name || line.description || '').trim().toLowerCase();
+  const isCoreLine = (line)=> {
+    const label = lineLabel(line);
+    return isWorkProduct(line) || isGreenProduct(line) || label === 'werk' || label === 'groen';
+  };
+  const extraByKey = new Map();
+  for (const line of allLines){
+    if (isCoreLine(line)) continue;
+    const bucket = (line.bucket || 'invoice') === 'cash' ? 'cash' : 'invoice';
+    const keyBase = line.productId ? `p:${line.productId}` : `n:${lineLabel(line) || line.id}`;
+    if (!extraByKey.has(keyBase)){
+      extraByKey.set(keyBase, {
+        label: (getProduct(line.productId)?.name) || line.name || line.description || 'Product',
+        invoiceQty: 0,
+        cashQty: 0
+      });
+    }
+    const item = extraByKey.get(keyBase);
+    item[bucket === 'cash' ? 'cashQty' : 'invoiceQty'] = round2(item[bucket === 'cash' ? 'cashQty' : 'invoiceQty'] + (Number(line.qty) || 0));
+  }
+  const extraProducts = Array.from(extraByKey.values()).filter(item => item.invoiceQty > 0 || item.cashQty > 0);
+
+  const renderAllocationColumn = ({ bucket, kind, qty, icon })=>`
+    <div class="allocation-col" data-bucket="${bucket}">
+      <div class="allocation-col-head">${bucket === 'invoice' ? 'Factuur' : 'Cash'}</div>
+      <div class="allocation-controls">
+        ${isEdit ? `<button class="iconbtn iconbtn-sm" type="button" data-settle-quick-step="${bucket}|${kind}|-1" aria-label="${kind} min">−</button>` : `<span class="allocation-btn-placeholder"></span>`}
+        <div class="allocation-value mono tabular">${esc(String(formatQuickQty(qty)))}</div>
+        ${isEdit ? `<button class="iconbtn iconbtn-sm" type="button" data-settle-quick-step="${bucket}|${kind}|1" aria-label="${kind} plus">+</button>` : `<span class="allocation-btn-placeholder"></span>`}
+      </div>
+      <div class="allocation-icon" aria-hidden="true">${icon}</div>
+    </div>
+  `;
+
+  const workIcon = `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="7"/><path d="M12 8.6v3.8l2.7 1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  const greenIcon = `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M5 15c2.2-6.2 8.4-8.7 14-9-1.1 5.7-3 11.8-9 14-4 1.4-7-1.3-5-5Z" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.5 14.5c2 .2 4.6-.4 7.5-2.4" stroke-linecap="round"/></svg>`;
 
   $('#sheetActions').innerHTML = '';
-  const showInvoiceSection = pay.hasInvoice;
-  const showCashSection = true;
   $('#sheetBody').style.paddingBottom = 'calc(var(--bottom-tabbar-height) + var(--status-tabbar-height) + env(safe-area-inset-bottom) + 24px)';
-
   $('#sheetBody').innerHTML = `
-    <div class="stack settlement-detail ${visual.accentClass}">
-      <div class="section stack">
+    <div class="stack settlement-detail settlement-flow ${visual.accentClass}">
+      <div class="section stack section-tight">
+        <h2>Logboek totaal</h2>
+        <div class="summary-row"><span class="label">Totale werkuren</span><span class="num mono tabular">${formatDurationCompact(Math.floor(logbookTotals.totalWorkMs / 60000))}</span></div>
+        <div class="summary-row"><span class="label">Totale groen eenheden</span><span class="num mono tabular">${esc(String(formatQuickQty(logbookTotals.totalGreenUnits)))}</span></div>
+        ${logbookTotals.totalExtraProducts > 0 ? `<div class="summary-row"><span class="label">Totale extra producten</span><span class="num mono tabular">${esc(String(formatQuickQty(logbookTotals.totalExtraProducts)))}</span></div>` : ''}
+      </div>
+
+      <div class="section stack section-tight">
+        <h2>Werk verdeling</h2>
+        <div class="allocation-grid">
+          ${renderAllocationColumn({ bucket: 'invoice', kind: 'work', qty: workInvoiceLine?.qty || 0, icon: workIcon })}
+          ${renderAllocationColumn({ bucket: 'cash', kind: 'work', qty: workCashLine?.qty || 0, icon: workIcon })}
+        </div>
+      </div>
+
+      <div class="section stack section-tight">
+        <h2>Groen verdeling</h2>
+        <div class="allocation-grid">
+          ${renderAllocationColumn({ bucket: 'invoice', kind: 'green', qty: greenInvoiceLine?.qty || 0, icon: greenIcon })}
+          ${renderAllocationColumn({ bucket: 'cash', kind: 'green', qty: greenCashLine?.qty || 0, icon: greenIcon })}
+        </div>
+      </div>
+
+      ${extraProducts.length ? `
+      <div class="section stack section-tight">
+        <h2>Extra producten</h2>
+        <div class="stack allocation-extra-list">
+          ${extraProducts.map(item => `
+            <div class="allocation-extra-item">
+              <div class="allocation-extra-title">${esc(item.label)}</div>
+              <div class="allocation-grid allocation-grid-extra">
+                <div class="allocation-col" data-bucket="invoice"><div class="allocation-col-head">Factuur</div><div class="allocation-value mono tabular">${esc(String(formatQuickQty(item.invoiceQty)))}</div></div>
+                <div class="allocation-col" data-bucket="cash"><div class="allocation-col-head">Cash</div><div class="allocation-value mono tabular">${esc(String(formatQuickQty(item.cashQty)))}</div></div>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+      ` : ''}
+
+      <div class="section stack section-tight">
+        <h2>Totaal blok</h2>
+        <div class="totals-flat-grid ${pay.isPaid ? 'is-paid' : 'is-open'}">
+          <div class="totals-flat-col"><div class="allocation-col-head">Factuur</div><div class="totals-flat-value mono tabular">${moneyOrBlank(pay.invoiceTotal)}</div></div>
+          <div class="totals-flat-col"><div class="allocation-col-head">Cash</div><div class="totals-flat-value mono tabular">${moneyOrBlank(pay.cashTotal)}</div></div>
+        </div>
+      </div>
+
+      <div class="section stack section-tight">
         <div class="section-title-row"><h2>Gekoppelde logs</h2>${isEdit ? `<button class="btn" id="btnRecalc">Herbereken uit logs</button>` : ""}</div>
         <div class="flat-list" id="sLogs">
           ${availableLogs.slice(0,30).map(l=>{
@@ -3687,38 +3802,20 @@ function renderSettlementSheet(id){
         </div>
       </div>
 
-      <div class="section stack">
-        <div class="section-title-row"><h2>Logboek totaal</h2></div>
-        ${isEdit ? `<div class="settlement-totals-row mono tabular"><span class="totals-time">${formatDurationCompact(Math.floor(summary.totalWorkMs/60000))}</span><span class="totals-price">${formatMoneyEUR(summary.totalLogPrice)}</span><span class="totals-products">${summary.linkedCount}</span></div>` : `<button class="settlement-totals-row settlement-totals-button mono tabular" id="openSettlementOverview" type="button"><span class="totals-time">${formatDurationCompact(Math.floor(summary.totalWorkMs/60000))}</span><span class="totals-price">${formatMoneyEUR(summary.totalLogPrice)}</span><span class="totals-products">${summary.linkedCount}</span></button>`}
-      </div>
-
-      ${showInvoiceSection ? `
-      <div class="section stack">
-        <div class="section-title-row">${(isEdit && !invoiceLocked)
-          ? `<input id="invoiceNumberInput" value="${esc(invoiceNumberDisplay)}" />`
-          : `<h2>${esc(invoiceNumberDisplay || "")}</h2>`}<div class="section-value">${moneyOrBlank(pay.invoiceTotal)}</div></div>
-        ${renderLinesTable(s, 'invoice', { readOnly: !isEdit })}
-        ${isEdit ? `<button class="btn" id="addInvoiceLine">+ regel</button>` : ""}
-      </div>
-      ` : ""}
-
-      ${showCashSection ? `
-      <div class="section stack">
-        <div class="section-title-row"><h2>Cash</h2><div class="section-value">${moneyOrBlank(pay.cashTotal)}</div></div>
-        ${renderLinesTable(s, 'cash', { readOnly: !isEdit })}
-        ${isEdit ? `<button class="btn" id="addCashLine">+ regel</button>` : ""}
-      </div>
-      ` : ""}
-
-      <div class="section stack">
-        <h2>Notitie</h2>
-        ${isEdit ? `<textarea id="sNote" rows="3">${esc(s.note||"")}</textarea>` : `<div class="small">${esc(s.note||"—")}</div>`}
+      <div class="section stack section-tight">
+        <h2>Administratieve gegevens</h2>
+        <div class="summary-row"><span class="label">Datum</span><span class="num">${esc(formatDatePretty(s.date))}</span></div>
+        ${showInvoiceSection && pay.invoiceTotal > 0 ? `<div class="summary-row"><span class="label">Factuurnummer</span><span class="num mono">${esc(invoiceNumberDisplay || '—')}</span></div>` : ''}
+        <div class="summary-row"><span class="label">Status</span><span class="num">${esc(statusLabelNL(s.status))}</span></div>
+        <div class="summary-row"><span class="label">Notitie</span><span class="num">${esc(s.note || '—')}</span></div>
       </div>
 
       ${isEdit ? `
       <div class="section stack">
         <h2>Acties</h2>
         <div class="compact-row"><label>Klant</label><div><select id="sCustomer">${customerOptions}</select></div></div>
+        ${showInvoiceSection ? `<div class="compact-row"><label>Factuurnr</label><div>${invoiceLocked ? `<span class="small mono">${esc(invoiceNumberDisplay || '—')}</span>` : `<input id="invoiceNumberInput" value="${esc(invoiceNumberDisplay)}" />`}</div></div>` : ''}
+        <textarea id="sNote" rows="3">${esc(s.note||"")}</textarea>
         <button class="btn danger" id="delSettlement">Verwijder</button>
       </div>` : ""}
     </div>
@@ -3769,9 +3866,6 @@ function renderSettlementSheet(id){
   if (!isEdit){
     $('#sheetBody').querySelectorAll('[data-open-linked-log]').forEach(btn=>{
       btn.addEventListener('click', ()=> openSheet('log', btn.getAttribute('data-open-linked-log')));
-    });
-    $('#openSettlementOverview')?.addEventListener('click', ()=>{
-      pushView({ view: 'settlementLogOverview', id: s.id });
     });
   }
 
@@ -3842,69 +3936,6 @@ function renderSettlementSheet(id){
         }
       );
     });
-
-    $('#sheetBody').querySelectorAll('[data-line-qty]').forEach(inp=>{
-      inp.addEventListener('change', ()=>{
-        const line = s.lines.find(x=>x.id===inp.getAttribute('data-line-qty'));
-        if (!line) return;
-        actions.editSettlement(s.id, (draft)=>{
-          const target = draft.lines.find(x=>x.id===inp.getAttribute('data-line-qty'));
-          if (target) target.qty = Number(String(inp.value).replace(',', '.')||'0');
-        });
-        renderSheet();
-      });
-    });
-    $('#sheetBody').querySelectorAll('[data-line-price]').forEach(inp=>{
-      inp.addEventListener('change', ()=>{
-        const line = s.lines.find(x=>x.id===inp.getAttribute('data-line-price'));
-        if (!line) return;
-        actions.editSettlement(s.id, (draft)=>{
-          const target = draft.lines.find(x=>x.id===inp.getAttribute('data-line-price'));
-          if (target) target.unitPrice = Number(String(inp.value).replace(',', '.')||'0');
-        });
-        renderSheet();
-      });
-    });
-    $('#sheetBody').querySelectorAll('[data-line-del]').forEach(btn=>{
-      btn.addEventListener('click', ()=>{
-        const lineId = btn.getAttribute('data-line-del');
-        if (!confirmDelete('Regel verwijderen')) return;
-        actions.editSettlement(s.id, (draft)=>{
-          draft.lines = (draft.lines||[]).filter(x=>x.id!==lineId);
-        });
-        renderSheet();
-      });
-    });
-    $('#sheetBody').querySelectorAll('[data-line-product]').forEach(sel=>{
-      sel.addEventListener('change', ()=>{
-        const line = s.lines.find(x=>x.id===sel.getAttribute('data-line-product'));
-        if (!line) return;
-        const productId = sel.value || null;
-        const product = productId ? getProduct(productId) : null;
-        actions.editSettlement(s.id, (draft)=>{
-          const target = draft.lines.find(x=>x.id===sel.getAttribute('data-line-product'));
-          if (!target) return;
-          target.productId = productId;
-          if (product){
-            target.name = product.name;
-            target.description = product.name;
-            target.unitPrice = Number(product.unitPrice || 0);
-            if ((target.bucket || 'invoice') === 'invoice') target.vatRate = Number(product.vatRate ?? 0.21);
-          }
-        });
-        renderSheet();
-      });
-    });
-
-    $('#addInvoiceLine')?.addEventListener('click', ()=>{
-      actions.editSettlement(s.id, (draft)=> addSettlementLine(draft, 'invoice'));
-      renderSheet();
-    });
-    $('#addCashLine')?.addEventListener('click', ()=>{
-      actions.editSettlement(s.id, (draft)=> addSettlementLine(draft, 'cash'));
-      renderSheet();
-    });
-
   }
 }
 
