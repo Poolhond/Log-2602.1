@@ -74,6 +74,9 @@ function formatDurationCompact(totalMinutes){
   return `${h}u${String(m).padStart(2, "0")}m`;
 }
 function round2(n){ return Math.round((Number(n||0))*100)/100; }
+function roundToNearestHalf(n){
+  return Math.round((Number(n || 0) * 2)) / 2;
+}
 function formatDatePretty(isoDate){
   if (!isoDate) return "";
   const [y, m, d] = String(isoDate).split("-").map(Number);
@@ -1060,10 +1063,24 @@ function formatQuickQty(value){
 function adjustSettlementQuickQty(settlementId, bucket, kind, delta){
   actions.editSettlement(settlementId, (draft)=>{
     draft.lines = draft.lines || [];
+    ensureDefaultSettlementLines(draft);
     const line = findSettlementQuickLine(draft.lines, bucket, kind);
     if (!line) return;
-    const nextQty = Math.max(0, round2((Number(line.qty) || 0) + Number(delta || 0)));
+    const oppositeBucket = bucket === "cash" ? "invoice" : "cash";
+    const oppositeLine = findSettlementQuickLine(draft.lines, oppositeBucket, kind);
+
+    const computed = computeSettlementFromLogsInState(state, draft.customerId, draft.logIds || []);
+    const isKind = (item)=> kind === "work" ? isWorkProduct(item) : isGreenProduct(item);
+    const computedTotalQty = round2((computed.lines || [])
+      .filter(isKind)
+      .reduce((total, item)=> total + (Number(item.qty) || 0), 0));
+    const fallbackCurrentTotal = round2((Number(line.qty) || 0) + (Number(oppositeLine?.qty) || 0));
+    const totalQty = computedTotalQty > 0 ? computedTotalQty : fallbackCurrentTotal;
+
+    const rawNextQty = round2((Number(line.qty) || 0) + Number(delta || 0));
+    const nextQty = Math.max(0, Math.min(totalQty, rawNextQty));
     line.qty = nextQty;
+    if (oppositeLine) oppositeLine.qty = round2(Math.max(0, totalQty - nextQty));
   });
 }
 function countGreenItems(log){
@@ -1383,7 +1400,7 @@ function computeSettlementFromLogsInState(sourceState, customerId, logIds){
       cur.unitPrice = Number(it.unitPrice)||cur.unitPrice;
     }
   }
-  const hours = round2(workMs / 3600000);
+  const hours = roundToNearestHalf(workMs / 3600000);
 
   // build lines: labour + grouped items
   const lines = [];
@@ -1413,7 +1430,7 @@ function computeSettlementFromLogsInState(sourceState, customerId, logIds){
       qty: round2(v.qty),
       unitPrice: round2(v.unitPrice),
       vatRate: prod?.vatRate ?? 0.21,
-      bucket: (prod?.defaultBucket || "invoice")
+      bucket: "invoice"
     });
   }
 
@@ -3909,6 +3926,11 @@ function renderSettlementSheet(id){
         actions.editSettlement(s.id, (draft)=>{
           if (cb.checked) draft.logIds = Array.from(new Set([...(draft.logIds||[]), logId]));
           else draft.logIds = (draft.logIds||[]).filter(x => x !== logId);
+          const prev = new Map((draft.lines || []).map(li => [li.productId + "|" + li.description, li.bucket]));
+          draft.lines = computeSettlementFromLogsInState(state, draft.customerId, draft.logIds || []).lines
+            .map(li => ({ ...li, bucket: prev.get(li.productId + "|" + li.description) || li.bucket }));
+          ensureDefaultSettlementLines(draft);
+          syncSettlementAmounts(draft);
         });
         renderSheet();
       });
